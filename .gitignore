@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments and environment files
+.venv
+.env
+
+# sqlite database files
+*.db
+*.sqlite
+
+# Logs and temporary files along with test artifacts
+logs/
+*.log
+tmp/
+.hypothesis/
+htmlcov/
+
+# Temp files
+.coverage
+coverage.xml
+
+# Media Files
+media/
