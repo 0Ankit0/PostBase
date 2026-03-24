@@ -17,6 +17,8 @@
 | Bindings | POST | `/api/v1/bindings/{bindingId}/switchovers` | Start provider switchover |
 | Auth | POST | `/api/v1/auth/users` | Create auth user through facade |
 | Auth | POST | `/api/v1/auth/sessions` | Create session or token |
+| Tenants | GET | `/api/v1/tenants/invitations/me` | List invitations for the authenticated user email |
+| Tenants | POST | `/api/v1/tenants/invitations/decline` | Decline a pending tenant invitation token |
 | Data | POST | `/api/v1/data/namespaces` | Create namespace / schema scope |
 | Data | POST | `/api/v1/data/tables` | Register or apply table definition |
 | Data | POST | `/api/v1/data/query` | Facade query endpoint |
@@ -55,7 +57,24 @@
 }
 ```
 
+## Example: Data Query Request
+
+```json
+{
+  "namespace": "app",
+  "table": "posts",
+  "filters": {
+    "status": "published"
+  },
+  "limit": 25,
+  "offset": 0,
+  "order_by": "id",
+  "order_direction": "desc"
+}
+```
+
 ## Authorization Notes
 - Project owners and operators can create or change bindings subject to role policy.
 - App-facing auth, data, storage, function, and event APIs are always resolved through environment-scoped facade contracts.
 - Secret creation, provider switchover, and cross-environment operations require elevated permissions and audit logging.
+- Tenant invitation accept/decline endpoints require an authenticated user and enforce that invitation email matches the caller email.

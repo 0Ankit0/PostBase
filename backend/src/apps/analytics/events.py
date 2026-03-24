@@ -30,6 +30,7 @@ class PaymentEvents:
 class TenantEvents:
     TENANT_CREATED = "tenant_created"
     TENANT_MEMBER_INVITED = "tenant_member_invited"
+    TENANT_INVITATION_DECLINED = "tenant_invitation_declined"
     TENANT_MEMBER_JOINED = "tenant_member_joined"
     TENANT_MEMBER_REMOVED = "tenant_member_removed"
 

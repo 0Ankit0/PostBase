@@ -138,3 +138,21 @@ async def test_postbase_control_plane_and_auth_data_flow(client, db_session):
     rows = list_rows_response.json()["rows"]
     assert len(rows) == 1
     assert rows[0]["title"] == "hello world"
+
+    query_rows_response = await client.post(
+        "/api/v1/data/query",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "namespace": "app",
+            "table": "posts",
+            "filters": {"title": "hello world"},
+            "limit": 10,
+            "offset": 0,
+            "order_by": "id",
+            "order_direction": "asc",
+        },
+    )
+    assert query_rows_response.status_code == 200, query_rows_response.text
+    queried_rows = query_rows_response.json()["rows"]
+    assert len(queried_rows) == 1
+    assert queried_rows[0]["title"] == "hello world"

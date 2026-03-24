@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from src.postbase.capabilities.data.contracts import DataMutationPayload, DataQueryResult
+from src.postbase.capabilities.data.contracts import DataMutationPayload, DataQueryRequest, DataQueryResult
 from src.postbase.domain.enums import CapabilityKey, PolicyMode
 from src.postbase.domain.models import DataNamespace, TableDefinition
 from src.postbase.platform.access import PostBaseAccessContext, validate_identifier
@@ -31,12 +31,53 @@ class PostgresNativeDataProvider:
         return CapabilityProfile(
             capability=CapabilityKey.DATA,
             provider_key="postgres-native",
-            supported_operations=["list", "create", "update", "delete"],
+            supported_operations=["list", "query", "create", "update", "delete"],
             optional_features=["owner_policy"],
         )
 
     async def health(self) -> ProviderHealth:
         return ProviderHealth()
+
+    async def query_rows(self, context: PostBaseAccessContext, payload: DataQueryRequest) -> DataQueryResult:
+        db: AsyncSession = context.db  # type: ignore[attr-defined]
+        namespace_row, table_row = await self._resolve_table(db, context, payload.namespace, payload.table)
+        limit = min(max(payload.limit, 1), 500)
+        offset = max(payload.offset, 0)
+
+        sql = f"SELECT * FROM {self._qualified_table(db, namespace_row.physical_schema, table_row.table_name)}"
+        params: dict[str, Any] = {}
+        sql = self._apply_policy_read(context, table_row, sql, params)
+
+        has_where = " WHERE " in sql
+        for idx, (column_name, column_value) in enumerate(payload.filters.items()):
+            safe_column_name = validate_identifier(column_name, "Column")
+            param_name = f"filter_{idx}"
+            sql += f' {"AND" if has_where else "WHERE"} "{safe_column_name}" = :{param_name}'
+            params[param_name] = column_value
+            has_where = True
+
+        if payload.order_by:
+            safe_order_column = validate_identifier(payload.order_by, "Order by column")
+            direction = payload.order_direction.lower()
+            if direction not in {"asc", "desc"}:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="order_direction must be 'asc' or 'desc'",
+                )
+            sql += f' ORDER BY "{safe_order_column}" {direction.upper()}'
+
+        sql += " LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
+
+        result = await db.execute(text(sql), params)
+        await record_usage(
+            db,
+            environment_id=context.environment_id,
+            capability_key=CapabilityKey.DATA.value,
+            metric_key="query_rows",
+        )
+        return DataQueryResult(rows=[dict(row) for row in result.mappings().all()])
 
     async def list_rows(self, context: PostBaseAccessContext, namespace: str, table: str) -> DataQueryResult:
         db: AsyncSession = context.db  # type: ignore[attr-defined]

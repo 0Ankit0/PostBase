@@ -6,6 +6,7 @@
 - **US-OWN-002**: As a project owner, I want to bind supported providers for storage, functions, and realtime so I can choose infrastructure that fits my needs.
 - **US-OWN-003**: As a project owner, I want to switch a provider later through a controlled migration flow so I am not permanently locked in.
 - **US-OWN-004**: As a project owner, I want usage, audit, and health visibility so I can operate the platform safely.
+- **US-OWN-005**: As a tenant admin, I want to invite users and let invitees explicitly accept or decline so membership intent is auditable and unambiguous.
 
 ## App Developer
 
@@ -34,3 +35,4 @@
 ## Application End User
 
 - **US-END-001**: As an application end user, I want authentication, file access, and realtime features to work consistently even if the app's backend provider changes underneath.
+- **US-END-002**: As an invited user, I want to list all my pending tenant invitations in one place so I can quickly decide which organizations to join.

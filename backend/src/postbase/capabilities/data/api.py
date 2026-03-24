@@ -2,10 +2,19 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from src.postbase.capabilities.data.contracts import DataMutationPayload, DataQueryResult
+from src.postbase.capabilities.data.contracts import DataMutationPayload, DataQueryRequest, DataQueryResult
 from src.postbase.capabilities.data.dependencies import get_access_context, get_data_provider
 
 router = APIRouter(prefix="/data", tags=["postbase-data"])
+
+
+@router.post("/query", response_model=DataQueryResult)
+async def query_rows(
+    payload: DataQueryRequest,
+    context=Depends(get_access_context),
+    provider=Depends(get_data_provider),
+) -> DataQueryResult:
+    return await provider.query_rows(context, payload)
 
 
 @router.get("/{namespace}/{table}", response_model=DataQueryResult)
