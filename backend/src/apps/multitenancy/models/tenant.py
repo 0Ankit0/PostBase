@@ -16,6 +16,7 @@ class TenantRole(str, Enum):
 class InvitationStatus(str, Enum):
     PENDING = "pending"
     ACCEPTED = "accepted"
+    DECLINED = "declined"
     EXPIRED = "expired"
     REVOKED = "revoked"
 

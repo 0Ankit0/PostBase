@@ -107,6 +107,32 @@ async def _require_tenant_role(
     return membership
 
 
+async def _expire_pending_invitations_for_email(db: AsyncSession, email: str) -> bool:
+    """
+    Mark stale pending invitations for an email as expired.
+
+    Returns True when at least one invitation state was changed.
+    """
+    now = datetime.now()
+    pending = (
+        await db.execute(
+            select(TenantInvitation).where(
+                TenantInvitation.email == email,
+                TenantInvitation.status == InvitationStatus.PENDING,
+                TenantInvitation.expires_at < now,
+            )
+        )
+    ).scalars().all()
+
+    if not pending:
+        return False
+
+    for invitation in pending:
+        invitation.status = InvitationStatus.EXPIRED
+    await db.commit()
+    return True
+
+
 # ── Tenant CRUD ───────────────────────────────────────────────────────────────
 
 @router.post("/", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
@@ -554,6 +580,38 @@ async def list_invitations(
     return PaginatedResponse[TenantInvitationResponse].create(items=items_resp, total=total, skip=skip, limit=limit)
 
 
+@router.get("/invitations/me", response_model=PaginatedResponse[TenantInvitationResponse])
+async def list_my_invitations(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List invitations sent to the current authenticated user's email."""
+    await _expire_pending_invitations_for_email(db, current_user.email)
+
+    total = (
+        await db.execute(
+            select(func.count(col(TenantInvitation.id))).where(
+                TenantInvitation.email == current_user.email,
+            )
+        )
+    ).scalar_one()
+
+    items = (
+        await db.execute(
+            select(TenantInvitation)
+            .where(TenantInvitation.email == current_user.email)
+            .order_by(TenantInvitation.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    items_resp = [TenantInvitationResponse.model_validate(i) for i in items]
+    return PaginatedResponse[TenantInvitationResponse].create(items=items_resp, total=total, skip=skip, limit=limit)
+
+
 @router.post("/invitations/accept", response_model=TenantMemberResponse)
 async def accept_invitation(
     body: AcceptInvitationRequest,
@@ -636,6 +694,52 @@ async def accept_invitation(
         {"tenant_id": tenant.id, "tenant_slug": tenant.slug, "role": invitation.role.value},
     )
     return membership
+
+
+@router.post("/invitations/decline", response_model=TenantInvitationResponse)
+async def decline_invitation(
+    body: AcceptInvitationRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    analytics: AnalyticsService = Depends(get_analytics),
+):
+    """Decline a pending invitation token addressed to the current user."""
+    invitation = (
+        await db.execute(
+            select(TenantInvitation).where(TenantInvitation.token == body.token)
+        )
+    ).scalars().first()
+
+    if not invitation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found")
+
+    if invitation.email != current_user.email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This invitation was sent to a different email address",
+        )
+
+    if invitation.status != InvitationStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invitation is {invitation.status}",
+        )
+
+    if invitation.expires_at < datetime.now():
+        invitation.status = InvitationStatus.EXPIRED
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invitation has expired")
+
+    invitation.status = InvitationStatus.DECLINED
+    await db.commit()
+    await db.refresh(invitation)
+
+    await analytics.capture(
+        str(current_user.id),
+        TenantEvents.TENANT_INVITATION_DECLINED,
+        {"tenant_id": invitation.tenant_id, "invitee_email": invitation.email},
+    )
+    return invitation
 
 
 @router.delete("/{tenant_id}/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
