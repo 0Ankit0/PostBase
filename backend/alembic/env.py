@@ -17,6 +17,7 @@ from src.apps.finance.models import *  # noqa: F403,F401
 from src.apps.iam.models import *  # noqa: F403,F401
 from src.apps.multitenancy.models import *  # noqa: F403,F401
 from src.apps.notification.models import *  # noqa: F403,F401
+from src.postbase.domain.models import *  # noqa: F403,F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -122,7 +122,7 @@ class Settings(BaseSettings):
         enable_decoding=False,
     )
 
-    PROJECT_NAME: str = "FastAPI Template"
+    PROJECT_NAME: str = "PostBase"
     APP_ENV: str = "development"
     APP_INSTANCE_NAME: str = "fastapi-template"
     APP_REGION: str = "local"
