@@ -1,0 +1,1 @@
+"""PostBase auth capability."""

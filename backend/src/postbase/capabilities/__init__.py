@@ -1,0 +1,1 @@
+"""Capability facades for PostBase."""

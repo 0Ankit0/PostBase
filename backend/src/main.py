@@ -29,6 +29,14 @@ from src.apps.system.api import router as system_router
 from src.apps.observability.api import router as observability_router
 from src.apps.observability.service import prune_old_log_entries
 from src.apps.core.storage import storage_uses_local_filesystem
+from src.postbase import bootstrap_postbase_runtime
+from src.postbase.control_plane import router as postbase_control_plane_router
+from src.postbase.capabilities.auth.api import router as postbase_auth_router
+from src.postbase.capabilities.data.api import router as postbase_data_router
+from src.postbase.capabilities.storage.api import router as postbase_storage_router
+from src.postbase.capabilities.functions.api import router as postbase_functions_router
+from src.postbase.capabilities.events.api import router as postbase_events_router
+from src.postbase.platform.seeding import seed_provider_catalog
 
 configure_logging()
 
@@ -42,6 +50,7 @@ limiter = Limiter(
 async def lifespan(app: FastAPI):
     """Initialize DB tables, Casbin enforcer, Redis cache, WebSocket manager, and Analytics on startup."""
     await init_db()
+    bootstrap_postbase_runtime()
 
     enforcer = await CasbinEnforcer.get_enforcer(engine)
     app.state.casbin_enforcer = enforcer
@@ -59,6 +68,7 @@ async def lifespan(app: FastAPI):
 
     from src.db.session import async_session_factory
     async with async_session_factory() as session:
+        await seed_provider_catalog(session)
         await prune_old_log_entries(session)
         await session.commit()
 
@@ -127,6 +137,12 @@ if not settings.DEBUG and not settings.TESTING:
 
 app.include_router(system_router, prefix=settings.API_V1_STR)
 app.include_router(observability_router, prefix=settings.API_V1_STR)
+app.include_router(postbase_control_plane_router, prefix=settings.API_V1_STR)
+app.include_router(postbase_auth_router, prefix=settings.API_V1_STR)
+app.include_router(postbase_data_router, prefix=settings.API_V1_STR)
+app.include_router(postbase_storage_router, prefix=settings.API_V1_STR)
+app.include_router(postbase_functions_router, prefix=settings.API_V1_STR)
+app.include_router(postbase_events_router, prefix=settings.API_V1_STR)
 
 if settings.FEATURE_AUTH:
     app.include_router(api_router, prefix=settings.API_V1_STR)
