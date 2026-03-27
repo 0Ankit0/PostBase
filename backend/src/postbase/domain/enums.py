@@ -15,8 +15,25 @@ class EnvironmentStage(str, Enum):
     PRODUCTION = "production"
 
 
-class BindingStatus(str, Enum):
+class EnvironmentStatus(str, Enum):
     ACTIVE = "active"
+    DEGRADED = "degraded"
+    INACTIVE = "inactive"
+
+
+class ReadinessState(str, Enum):
+    READY = "ready"
+    DEGRADED = "degraded"
+    NOT_READY = "not_ready"
+    VALIDATING = "validating"
+
+
+class BindingStatus(str, Enum):
+    PENDING_VALIDATION = "pending_validation"
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
+    RETIRED = "retired"
+    FAILED = "failed"
     PENDING = "pending"
     DISABLED = "disabled"
 

@@ -9,10 +9,12 @@ from sqlmodel import Field, SQLModel
 from src.postbase.domain.enums import (
     ApiKeyRole,
     BindingStatus,
+    EnvironmentStatus,
     EnvironmentStage,
     MigrationStatus,
     PolicyMode,
     ProviderCertificationState,
+    ReadinessState,
     SecretStatus,
     SwitchoverStatus,
 )
@@ -45,6 +47,11 @@ class Environment(SQLModel, table=True):
     name: str = Field(max_length=120)
     slug: str = Field(max_length=63)
     stage: EnvironmentStage = Field(default=EnvironmentStage.DEVELOPMENT)
+    region_preference: str | None = Field(default=None, max_length=64)
+    status: EnvironmentStatus = Field(default=EnvironmentStatus.ACTIVE)
+    readiness_state: ReadinessState = Field(default=ReadinessState.READY)
+    readiness_detail: str = Field(default="", max_length=500)
+    last_validated_at: datetime | None = Field(default=None)
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -87,13 +94,7 @@ class ProviderCatalogEntry(SQLModel, table=True):
 
 class CapabilityBinding(SQLModel, table=True):
     __tablename__ = "postbase_capability_binding"
-    __table_args__ = (
-        UniqueConstraint(
-            "environment_id",
-            "capability_type_id",
-            name="uq_postbase_capability_binding_env_capability",
-        ),
-    )
+    __table_args__ = ()
 
     id: int | None = Field(default=None, primary_key=True)
     environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
@@ -102,7 +103,10 @@ class CapabilityBinding(SQLModel, table=True):
         foreign_key="postbase_provider_catalog_entry.id",
         index=True,
     )
-    status: BindingStatus = Field(default=BindingStatus.ACTIVE)
+    status: BindingStatus = Field(default=BindingStatus.PENDING_VALIDATION)
+    readiness_detail: str = Field(default="", max_length=500)
+    region: str | None = Field(default=None, max_length=64)
+    supersedes_binding_id: int | None = Field(default=None, foreign_key="postbase_capability_binding.id")
     config_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, default=dict),
@@ -124,6 +128,7 @@ class SecretRef(SQLModel, table=True):
     secret_kind: str = Field(max_length=64)
     status: SecretStatus = Field(default=SecretStatus.ACTIVE)
     last_four: str = Field(default="", max_length=4)
+    encrypted_value: str = Field(default="")
     value_hash: str = Field(max_length=128)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -143,6 +148,18 @@ class EnvironmentApiKey(SQLModel, table=True):
     hashed_secret: str = Field(max_length=128)
     is_active: bool = Field(default=True)
     last_used_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class BindingSecretRef(SQLModel, table=True):
+    __tablename__ = "postbase_binding_secret_ref"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "secret_ref_id", name="uq_postbase_binding_secret_ref"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    binding_id: int = Field(foreign_key="postbase_capability_binding.id", index=True)
+    secret_ref_id: int = Field(foreign_key="postbase_secret_ref.id", index=True)
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -189,6 +206,7 @@ class SwitchoverPlan(SQLModel, table=True):
     )
     strategy: str = Field(default="cutover", max_length=64)
     status: SwitchoverStatus = Field(default=SwitchoverStatus.PENDING)
+    execution_detail: str = Field(default="")
     requested_by_user_id: int | None = Field(default=None, foreign_key="user.id")
     created_at: datetime = Field(default_factory=utcnow)
     completed_at: datetime | None = Field(default=None)
@@ -347,6 +365,10 @@ class ExecutionRecord(SQLModel, table=True):
     function_definition_id: int = Field(foreign_key="postbase_function_definition.id", index=True)
     environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
     invocation_type: str = Field(default="sync", max_length=20)
+    idempotency_key: str | None = Field(default=None, max_length=120, index=True)
+    replay_of_execution_id: int | None = Field(default=None, foreign_key="postbase_execution_record.id")
+    retry_count: int = Field(default=0)
+    log_excerpt: str = Field(default="")
     status: str = Field(default="completed", max_length=32, index=True)
     input_json: dict[str, Any] = Field(
         default_factory=dict,
@@ -397,8 +419,33 @@ class DeliveryRecord(SQLModel, table=True):
     subscription_id: int | None = Field(default=None, foreign_key="postbase_subscription.id", index=True)
     event_name: str = Field(max_length=120, index=True)
     status: str = Field(default="delivered", max_length=32)
+    attempt_count: int = Field(default=1)
+    delivered_at: datetime | None = Field(default=None)
+    error_text: str = Field(default="")
     payload_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, default=dict),
     )
     attempted_at: datetime = Field(default_factory=utcnow)
+
+
+class WebhookDeliveryJob(SQLModel, table=True):
+    __tablename__ = "postbase_webhook_delivery_job"
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: int = Field(foreign_key="postbase_event_channel.id", index=True)
+    subscription_id: int = Field(foreign_key="postbase_subscription.id", index=True)
+    event_name: str = Field(max_length=120, index=True)
+    payload_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
+    target_ref: str = Field(max_length=255)
+    status: str = Field(default="pending", max_length=32)
+    attempt_count: int = Field(default=0)
+    max_attempts: int = Field(default=3)
+    error_text: str = Field(default="")
+    next_attempt_at: datetime | None = Field(default=None, index=True)
+    delivered_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow)

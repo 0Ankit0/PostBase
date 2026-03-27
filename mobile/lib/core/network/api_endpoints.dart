@@ -48,4 +48,11 @@ class ApiEndpoints {
   static const String paymentProviders = '/payments/providers/';
   static const String paymentInitiate = '/payments/initiate/';
   static const String paymentVerify = '/payments/verify/';
+
+  // PostBase read-only mobile status endpoints
+  static const String postBaseProjects = '/projects';
+  static String postBaseProjectOverview(String projectId) =>
+      '/projects/$projectId/overview';
+  static String postBaseCapabilityHealth(String environmentId) =>
+      '/environments/$environmentId/reports/capability-health';
 }

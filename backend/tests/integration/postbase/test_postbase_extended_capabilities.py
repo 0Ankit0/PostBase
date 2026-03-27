@@ -133,13 +133,28 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
     )
     assert invoke_response.status_code == 200, invoke_response.text
     assert invoke_response.json()["output_json"]["echo"]["message"] == "hi"
+    assert invoke_response.json()["retry_count"] == 0
+
+    idempotent_invoke_response = await client.post(
+        f"/api/v1/functions/{function_id}/invoke",
+        headers={**user_headers, "Idempotency-Key": "invoke-1"},
+        json={"payload": {"message": "idempotent"}, "invocation_type": "sync"},
+    )
+    assert idempotent_invoke_response.status_code == 200, idempotent_invoke_response.text
+    replay_invoke_response = await client.post(
+        f"/api/v1/functions/{function_id}/invoke",
+        headers={**user_headers, "Idempotency-Key": "invoke-1"},
+        json={"payload": {"message": "idempotent"}, "invocation_type": "sync"},
+    )
+    assert replay_invoke_response.status_code == 200, replay_invoke_response.text
+    assert replay_invoke_response.json()["replay_of_execution_id"] is not None
 
     executions_response = await client.get(
         f"/api/v1/functions/{function_id}/executions",
         headers=user_headers,
     )
     assert executions_response.status_code == 200, executions_response.text
-    assert len(executions_response.json()) == 1
+    assert len(executions_response.json()) >= 3
 
     channel_response = await client.post(
         "/api/v1/events/channels",
@@ -155,6 +170,12 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
         json={"target_type": "room", "target_ref": "deployments", "config_json": {}},
     )
     assert subscription_response.status_code == 200, subscription_response.text
+    webhook_subscription_response = await client.post(
+        f"/api/v1/events/subscriptions/{channel_id}",
+        headers={"X-PostBase-Key": service_key},
+        json={"target_type": "webhook", "target_ref": "https://hooks.example.com/deploy", "config_json": {}},
+    )
+    assert webhook_subscription_response.status_code == 200, webhook_subscription_response.text
 
     publish_response = await client.post(
         f"/api/v1/events/publish/{channel_id}",
@@ -163,8 +184,9 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
     )
     assert publish_response.status_code == 200, publish_response.text
     deliveries = publish_response.json()
-    assert len(deliveries) == 1
-    assert deliveries[0]["status"] == "delivered"
+    assert len(deliveries) == 2
+    assert all("attempt_count" in item for item in deliveries)
+    assert any(item["status"] == "delivered" for item in deliveries)
 
     health_response = await client.get(
         f"/api/v1/environments/{environment_id}/reports/capability-health",
@@ -197,7 +219,13 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
         json={"target_provider_key": "s3-compatible", "strategy": "cutover"},
     )
     assert switchover_response.status_code == 200, switchover_response.text
-    assert switchover_response.json()["status"] == "completed"
+    assert switchover_response.json()["status"] == "pending"
+    execute_response = await client.post(
+        f"/api/v1/switchovers/{switchover_response.json()['id']}/execute",
+        headers=owner_headers,
+    )
+    assert execute_response.status_code == 200, execute_response.text
+    assert execute_response.json()["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -441,6 +469,11 @@ async def test_postbase_provider_switchovers_to_alternate_adapters(client, db_se
         json={"target_provider_key": "inline-runtime", "strategy": "cutover"},
     )
     assert functions_switchover_response.status_code == 200, functions_switchover_response.text
+    functions_execute_response = await client.post(
+        f"/api/v1/switchovers/{functions_switchover_response.json()['id']}/execute",
+        headers=owner_headers,
+    )
+    assert functions_execute_response.status_code == 200, functions_execute_response.text
 
     storage_switchover_response = await client.post(
         f"/api/v1/bindings/{bindings['storage']['id']}/switchovers",
@@ -448,6 +481,11 @@ async def test_postbase_provider_switchovers_to_alternate_adapters(client, db_se
         json={"target_provider_key": "local-disk", "strategy": "cutover"},
     )
     assert storage_switchover_response.status_code == 200, storage_switchover_response.text
+    storage_execute_response = await client.post(
+        f"/api/v1/switchovers/{storage_switchover_response.json()['id']}/execute",
+        headers=owner_headers,
+    )
+    assert storage_execute_response.status_code == 200, storage_execute_response.text
 
     events_switchover_response = await client.post(
         f"/api/v1/bindings/{bindings['events']['id']}/switchovers",
@@ -455,6 +493,11 @@ async def test_postbase_provider_switchovers_to_alternate_adapters(client, db_se
         json={"target_provider_key": "websocket-gateway", "strategy": "cutover"},
     )
     assert events_switchover_response.status_code == 200, events_switchover_response.text
+    events_execute_response = await client.post(
+        f"/api/v1/switchovers/{events_switchover_response.json()['id']}/execute",
+        headers=owner_headers,
+    )
+    assert events_execute_response.status_code == 200, events_execute_response.text
 
     auth_signup_response = await client.post(
         "/api/v1/auth/users",

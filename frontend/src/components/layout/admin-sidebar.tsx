@@ -9,6 +9,7 @@ import {
   Users,
   Shield,
   ArrowLeft,
+  Server,
 } from 'lucide-react';
 import { OrgSwitcher } from './org-switcher';
 
@@ -18,6 +19,7 @@ const adminNavigation = [
   { name: 'Security Review', href: '/admin/security-review', icon: ShieldAlert },
   { name: 'Manage Users', href: '/admin/users', icon: Users },
   { name: 'Roles & Permissions', href: '/admin/rbac', icon: Shield },
+  { name: 'PostBase', href: '/admin/postbase', icon: Server },
 ];
 
 export function AdminSidebar() {

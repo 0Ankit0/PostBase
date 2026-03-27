@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 
 from src.postbase.capabilities.functions.contracts import (
     ExecutionRead,
@@ -32,10 +32,11 @@ async def list_functions(
 async def invoke_function(
     function_id: int,
     payload: FunctionInvokeRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     context=Depends(get_access_context),
     provider=Depends(get_functions_provider),
 ) -> ExecutionRead:
-    return await provider.invoke(context, function_id, payload)
+    return await provider.invoke(context, function_id, payload, idempotency_key=idempotency_key)
 
 
 @router.get("/{function_id}/executions", response_model=list[ExecutionRead])

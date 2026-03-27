@@ -5,8 +5,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.postbase.domain.enums import BindingStatus, CapabilityKey
-from src.postbase.domain.models import CapabilityBinding, CapabilityType, ProviderCatalogEntry
+from src.apps.core.config import settings
+from src.postbase.domain.models import (
+    BindingSecretRef,
+    CapabilityBinding,
+    CapabilityType,
+    ProviderCatalogEntry,
+    SecretRef,
+)
 from src.postbase.platform.contracts import ResolvedBinding
+from src.postbase.platform.secret_store import DbEncryptedSecretStore
 
 
 async def resolve_active_binding(
@@ -27,7 +35,9 @@ async def resolve_active_binding(
             .where(
                 CapabilityBinding.environment_id == environment_id,
                 CapabilityType.key == capability.value,
+                CapabilityBinding.status == BindingStatus.ACTIVE,
             )
+            .order_by(CapabilityBinding.updated_at.desc())
         )
     ).first()
     if row is None:
@@ -36,16 +46,22 @@ async def resolve_active_binding(
             detail=f"No active binding for capability '{capability.value}'",
         )
     binding, provider = row
-    if binding.status != BindingStatus.ACTIVE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Capability '{capability.value}' is not currently active for this environment",
+    secret_store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
+    secret_rows = (
+        await db.execute(
+            select(SecretRef)
+            .join(BindingSecretRef, BindingSecretRef.secret_ref_id == SecretRef.id)
+            .where(BindingSecretRef.binding_id == binding.id)
         )
+    ).scalars().all()
+    resolved_secrets = {item.secret_kind: secret_store.decrypt(item.encrypted_value) for item in secret_rows}
     return ResolvedBinding(
         environment_id=environment_id,
         project_id=project_id,
         capability=capability,
         provider_key=provider.provider_key,
         adapter_version=provider.adapter_version,
+        region=binding.region,
+        resolved_secrets=resolved_secrets,
         config=binding.config_json,
     )

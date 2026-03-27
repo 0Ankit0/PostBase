@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -17,7 +19,7 @@ class ChannelRead(BaseModel):
 
 
 class SubscriptionCreateRequest(BaseModel):
-    target_type: str
+    target_type: Literal["room", "webhook"]
     target_ref: str
     config_json: dict[str, Any] = {}
 
@@ -25,7 +27,7 @@ class SubscriptionCreateRequest(BaseModel):
 class SubscriptionRead(BaseModel):
     id: int
     channel_id: int
-    target_type: str
+    target_type: Literal["room", "webhook"]
     target_ref: str
     config_json: dict[str, Any]
     is_active: bool
@@ -42,6 +44,9 @@ class DeliveryRead(BaseModel):
     subscription_id: int | None
     event_name: str
     status: str
+    attempt_count: int
+    delivered_at: datetime | None
+    error_text: str
     payload_json: dict[str, Any]
 
 
