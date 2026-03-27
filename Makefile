@@ -15,7 +15,7 @@ backend-lint:
 	cd backend && uv run ruff check src tests
 
 backend-test:
-	cd backend && uv run pytest
+	cd backend && uv run --group test pytest
 
 backend-dev:
 	cd backend && uv run task start
@@ -33,13 +33,26 @@ frontend-dev:
 	cd frontend && npm run dev
 
 mobile-lint:
-	cd mobile && flutter analyze
+	@if command -v flutter >/dev/null 2>&1; then \
+		cd mobile && flutter analyze; \
+	else \
+		echo "⚠️  flutter not found; skipping mobile-lint"; \
+	fi
 
 mobile-test:
-	cd mobile && flutter test
+	@if command -v flutter >/dev/null 2>&1; then \
+		cd mobile && flutter test; \
+	else \
+		echo "⚠️  flutter not found; skipping mobile-test"; \
+	fi
 
 mobile-dev:
-	cd mobile && flutter run
+	@if command -v flutter >/dev/null 2>&1; then \
+		cd mobile && flutter run; \
+	else \
+		echo "flutter is required for mobile-dev. Install Flutter and re-run."; \
+		exit 1; \
+	fi
 
 dev-up:
 	docker compose up --build
