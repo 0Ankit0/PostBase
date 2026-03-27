@@ -13,13 +13,17 @@ from src.postbase.domain.enums import (
     ApiKeyRole,
     BindingStatus,
     CapabilityKey,
+    EnvironmentStage,
+    EnvironmentStatus,
     MigrationStatus,
     PolicyMode,
+    ReadinessState,
     SecretStatus,
     SwitchoverStatus,
 )
 from src.postbase.domain.models import (
     AuditLog,
+    BindingSecretRef,
     CapabilityBinding,
     CapabilityType,
     DataNamespace,
@@ -44,6 +48,8 @@ from src.postbase.platform.registry import provider_registry
 from src.postbase.platform.resolver import resolve_active_binding
 from src.postbase.platform.seeding import seed_provider_catalog
 from src.postbase.platform.security import hash_secret
+from src.postbase.platform.secret_store import DbEncryptedSecretStore
+from src.apps.core.config import settings
 
 
 ROLE_ORDER = {TenantRole.MEMBER: 0, TenantRole.ADMIN: 1, TenantRole.OWNER: 2}
@@ -152,6 +158,7 @@ async def create_environment_for_project(
     name: str,
     slug: str,
     stage: str,
+    region_preference: str | None,
     actor: User,
 ) -> Environment:
     await seed_provider_catalog(db)
@@ -175,6 +182,11 @@ async def create_environment_for_project(
         name=name,
         slug=slug,
         stage=stage,
+        region_preference=region_preference,
+        status=EnvironmentStatus.ACTIVE,
+        readiness_state=ReadinessState.READY,
+        readiness_detail="seeded with default active bindings",
+        last_validated_at=datetime.now(timezone.utc),
     )
     db.add(environment)
     await db.flush()
@@ -230,6 +242,7 @@ async def _seed_environment_bindings(db: AsyncSession, environment_id: int) -> N
                 capability_type_id=capability_type.id,
                 provider_catalog_entry_id=provider_entry.id,
                 status=BindingStatus.ACTIVE,
+                readiness_detail="seed default binding",
             )
         )
     await db.flush()
@@ -246,6 +259,7 @@ async def create_secret_ref(
     secret_kind: str,
     secret_value: str,
 ) -> SecretRef:
+    secret_store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
     validate_identifier(name, "Secret name")
     existing = (
         await db.execute(
@@ -263,6 +277,7 @@ async def create_secret_ref(
         name=name,
         provider_key=provider_key,
         secret_kind=secret_kind,
+        encrypted_value=secret_store.encrypt(secret_value),
         value_hash=hash_secret(secret_value),
         last_four=secret_value[-4:] if secret_value else "",
     )
@@ -293,6 +308,8 @@ async def rotate_secret_ref(
     actor: User,
     secret_value: str,
 ) -> SecretRef:
+    secret_store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
+    secret_ref.encrypted_value = secret_store.encrypt(secret_value)
     secret_ref.value_hash = hash_secret(secret_value)
     secret_ref.last_four = secret_value[-4:] if secret_value else ""
     secret_ref.status = SecretStatus.ACTIVE
@@ -414,13 +431,20 @@ async def create_table_metadata(
     )
     db.add(provider_entry)
     await db.flush()
+    migration_status = (
+        MigrationStatus.APPLIED
+        if environment.stage == EnvironmentStage.DEVELOPMENT
+        else MigrationStatus.PENDING
+    )
+    if migration_status == MigrationStatus.PENDING:
+        provider_entry.status = "pending_migration"
     db.add(
         SchemaMigration(
             environment_id=environment.id,
             namespace_id=namespace.id,
             table_definition_id=provider_entry.id,
             version=f"{provider_entry.id:04d}",
-            status=MigrationStatus.APPLIED,
+            status=migration_status,
             applied_sql=f"create table {normalized_table}",
         )
     )
@@ -438,6 +462,42 @@ async def create_table_metadata(
     await db.commit()
     await db.refresh(provider_entry)
     return provider_entry
+
+
+async def apply_schema_migration(
+    db: AsyncSession,
+    *,
+    migration: SchemaMigration,
+    environment: Environment,
+    project: Project,
+    actor: User,
+) -> SchemaMigration:
+    if migration.environment_id != environment.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    if migration.status == MigrationStatus.APPLIED:
+        return migration
+
+    migration.status = MigrationStatus.APPLIED
+    definition = await db.get(TableDefinition, migration.table_definition_id)
+    if definition is not None:
+        definition.status = "active"
+        touch_updated_at(definition)
+    touch_updated_at(migration)
+    await db.flush()
+    await record_audit_event(
+        db,
+        action="migration.applied",
+        entity_type="schema_migration",
+        entity_id=str(migration.id),
+        actor_user_id=actor.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"version": migration.version},
+    )
+    await db.commit()
+    await db.refresh(migration)
+    return migration
 
 
 def touch_updated_at(model: object) -> None:
@@ -491,18 +551,15 @@ async def create_switchover_plan(
         capability_binding_id=binding.id,
         target_provider_catalog_entry_id=target_provider.id,
         strategy=strategy,
-        status=SwitchoverStatus.COMPLETED,
+        status=SwitchoverStatus.PENDING,
+        execution_detail="plan created; awaiting execution",
         requested_by_user_id=actor.id,
-        completed_at=datetime.now(timezone.utc),
     )
     db.add(switchover)
-    binding.provider_catalog_entry_id = target_provider.id
-    binding.status = BindingStatus.ACTIVE
-    touch_updated_at(binding)
     await db.flush()
     await record_audit_event(
         db,
-        action="binding.switchover_completed",
+        action="binding.switchover_planned",
         entity_type="switchover_plan",
         entity_id=str(switchover.id),
         actor_user_id=actor.id,
@@ -514,6 +571,133 @@ async def create_switchover_plan(
     await db.commit()
     await db.refresh(switchover)
     return switchover
+
+
+async def execute_switchover_plan(
+    db: AsyncSession,
+    *,
+    switchover: SwitchoverPlan,
+    actor: User,
+    project: Project,
+    environment: Environment,
+) -> SwitchoverPlan:
+    binding = await db.get(CapabilityBinding, switchover.capability_binding_id)
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
+    if switchover.status != SwitchoverStatus.PENDING:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Switchover is not pending")
+
+    binding.provider_catalog_entry_id = switchover.target_provider_catalog_entry_id
+    binding.status = BindingStatus.ACTIVE
+    binding.readiness_detail = "switchover executed"
+    touch_updated_at(binding)
+    switchover.status = SwitchoverStatus.COMPLETED
+    switchover.execution_detail = "switchover executed successfully"
+    switchover.completed_at = datetime.now(timezone.utc)
+    await db.flush()
+    await record_audit_event(
+        db,
+        action="binding.switchover_executed",
+        entity_type="switchover_plan",
+        entity_id=str(switchover.id),
+        actor_user_id=actor.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"binding_id": binding.id, "strategy": switchover.strategy},
+    )
+    await db.commit()
+    await db.refresh(switchover)
+    return switchover
+
+
+async def create_binding_version(
+    db: AsyncSession,
+    *,
+    environment: Environment,
+    capability: CapabilityType,
+    provider: ProviderCatalogEntry,
+    actor: User,
+    project: Project,
+    config_json: dict,
+    region: str | None,
+    secret_ref_ids: list[int],
+) -> CapabilityBinding:
+    current_active = (
+        await db.execute(
+            select(CapabilityBinding).where(
+                CapabilityBinding.environment_id == environment.id,
+                CapabilityBinding.capability_type_id == capability.id,
+                CapabilityBinding.status == BindingStatus.ACTIVE,
+            )
+        )
+    ).scalars().first()
+    binding = CapabilityBinding(
+        environment_id=environment.id,
+        capability_type_id=capability.id,
+        provider_catalog_entry_id=provider.id,
+        config_json=config_json,
+        status=BindingStatus.PENDING_VALIDATION,
+        region=region,
+        supersedes_binding_id=current_active.id if current_active else None,
+    )
+    db.add(binding)
+    await db.flush()
+
+    for secret_ref_id in secret_ref_ids:
+        db.add(BindingSecretRef(binding_id=binding.id, secret_ref_id=secret_ref_id))
+
+    required_secret_kinds = provider.metadata_json.get("required_secret_kinds", [])
+    linked_secrets = (
+        await db.execute(
+            select(SecretRef)
+            .join(BindingSecretRef, BindingSecretRef.secret_ref_id == SecretRef.id)
+            .where(BindingSecretRef.binding_id == binding.id, SecretRef.status == SecretStatus.ACTIVE)
+        )
+    ).scalars().all()
+    linked_secret_kinds = {item.secret_kind for item in linked_secrets}
+    missing_secret_kinds = sorted(set(required_secret_kinds) - linked_secret_kinds)
+
+    supported_regions = provider.metadata_json.get("supported_regions", ["global"])
+    region_valid = region is None or "global" in supported_regions or region in supported_regions
+    if missing_secret_kinds or not region_valid:
+        binding.status = BindingStatus.FAILED
+        details = []
+        if missing_secret_kinds:
+            details.append(f"missing secrets: {', '.join(missing_secret_kinds)}")
+        if not region_valid:
+            details.append(f"unsupported region '{region}'")
+        binding.readiness_detail = "; ".join(details)
+        environment.readiness_state = ReadinessState.DEGRADED
+        environment.status = EnvironmentStatus.DEGRADED
+        environment.readiness_detail = binding.readiness_detail
+    else:
+        binding.status = BindingStatus.ACTIVE
+        binding.readiness_detail = "validated"
+        if current_active is not None:
+            current_active.status = BindingStatus.DEPRECATED
+            touch_updated_at(current_active)
+        environment.readiness_state = ReadinessState.READY
+        environment.status = EnvironmentStatus.ACTIVE
+        environment.readiness_detail = "bindings validated"
+
+    environment.last_validated_at = datetime.now(timezone.utc)
+    touch_updated_at(binding)
+    await db.flush()
+    await record_audit_event(
+        db,
+        action="binding.version_created",
+        entity_type="capability_binding",
+        entity_id=str(binding.id),
+        actor_user_id=actor.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"capability_key": capability.key, "provider_key": provider.provider_key, "status": binding.status.value},
+    )
+    await db.commit()
+    await db.refresh(binding)
+    return binding
 
 
 async def set_binding_status(
@@ -639,6 +823,8 @@ async def build_project_overview(
     keys = []
     usage_meters = []
     audit_logs = []
+    switchovers = []
+    migrations = []
     if environment_ids:
         bindings = (
             await db.execute(select(CapabilityBinding).where(CapabilityBinding.environment_id.in_(environment_ids)))
@@ -651,6 +837,16 @@ async def build_project_overview(
         ).scalars().all()
         usage_meters = (
             await db.execute(select(UsageMeter).where(UsageMeter.environment_id.in_(environment_ids)))
+        ).scalars().all()
+        switchovers = (
+            await db.execute(
+                select(SwitchoverPlan)
+                .join(CapabilityBinding, CapabilityBinding.id == SwitchoverPlan.capability_binding_id)
+                .where(CapabilityBinding.environment_id.in_(environment_ids))
+            )
+        ).scalars().all()
+        migrations = (
+            await db.execute(select(SchemaMigration).where(SchemaMigration.environment_id.in_(environment_ids)))
         ).scalars().all()
         last_day = datetime.now(timezone.utc).replace(microsecond=0)
         audit_logs = (
@@ -679,13 +875,38 @@ async def build_project_overview(
         environment_key_count = sum(1 for item in keys if item.environment_id == environment.id and item.is_active)
         environment_usage = sum(item.value for item in usage_meters if item.environment_id == environment.id)
         environment_audit_count = sum(1 for item in audit_logs if item.environment_id == environment.id)
+        environment_switchovers = sum(
+            1
+            for item in switchovers
+            if (
+                next(
+                    (
+                        binding.environment_id
+                        for binding in bindings
+                        if binding.id == item.capability_binding_id
+                    ),
+                    None,
+                )
+                == environment.id
+            )
+        )
+        pending_migrations = sum(
+            1
+            for item in migrations
+            if item.environment_id == environment.id and item.status == MigrationStatus.PENDING
+        )
         environment_health = health_by_environment[environment.id]
         environment_rows.append(
             {
                 "environment_id": encode_id(environment.id),
                 "stage": environment.stage,
+                "status": environment.status,
+                "readiness_state": environment.readiness_state,
+                "readiness_detail": environment.readiness_detail,
                 "active_bindings": environment_health["active"],
                 "degraded_bindings": environment_health["degraded"],
+                "recent_switchovers": environment_switchovers,
+                "pending_migrations": pending_migrations,
                 "secret_count": environment_secret_count,
                 "key_count": environment_key_count,
                 "usage_points_total": environment_usage,

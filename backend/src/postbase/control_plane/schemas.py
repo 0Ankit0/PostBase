@@ -6,7 +6,16 @@ from typing import Any
 from pydantic import BaseModel, field_serializer
 
 from src.apps.iam.utils.hashid import encode_id
-from src.postbase.domain.enums import ApiKeyRole, BindingStatus, EnvironmentStage, PolicyMode, SwitchoverStatus
+from src.postbase.domain.enums import (
+    ApiKeyRole,
+    BindingStatus,
+    EnvironmentStage,
+    EnvironmentStatus,
+    PolicyMode,
+    ReadinessState,
+    SwitchoverStatus,
+    MigrationStatus,
+)
 
 
 class EncodedModel(BaseModel):
@@ -43,6 +52,7 @@ class EnvironmentCreate(BaseModel):
     name: str
     slug: str
     stage: EnvironmentStage = EnvironmentStage.DEVELOPMENT
+    region_preference: str | None = None
 
 
 class EnvironmentRead(EncodedModel):
@@ -51,6 +61,11 @@ class EnvironmentRead(EncodedModel):
     name: str
     slug: str
     stage: EnvironmentStage
+    region_preference: str | None
+    status: EnvironmentStatus
+    readiness_state: ReadinessState
+    readiness_detail: str
+    last_validated_at: datetime | None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -73,6 +88,8 @@ class BindingCreate(BaseModel):
     capability_key: str
     provider_key: str
     config_json: dict[str, Any] = {}
+    secret_ref_ids: list[str] = []
+    region: str | None = None
 
 
 class BindingRead(EncodedModel):
@@ -82,6 +99,10 @@ class BindingRead(EncodedModel):
     provider_key: str
     adapter_version: str
     status: BindingStatus
+    readiness_detail: str
+    linked_secret_ref_ids: list[str]
+    supersedes_binding_id: str | None
+    region: str | None
     config_json: dict[str, Any]
 
     @field_serializer("environment_id")
@@ -104,6 +125,7 @@ class SwitchoverRead(EncodedModel):
     target_provider_catalog_entry_id: int
     strategy: str
     status: SwitchoverStatus
+    execution_detail: str
     created_at: datetime
     completed_at: datetime | None
 
@@ -247,11 +269,33 @@ class TableRead(EncodedModel):
         return encode_id(value)
 
 
+class MigrationRead(EncodedModel):
+    id: int
+    environment_id: int
+    namespace_id: int
+    table_definition_id: int | None
+    version: str
+    status: MigrationStatus
+    applied_sql: str
+    created_at: datetime
+
+    @field_serializer("environment_id", "namespace_id", "table_definition_id")
+    def serialize_related_ids(self, value: int | None) -> str | None:
+        if value is None:
+            return None
+        return encode_id(value)
+
+
 class EnvironmentOverviewRead(BaseModel):
     environment_id: str
     stage: EnvironmentStage
+    status: EnvironmentStatus
+    readiness_state: ReadinessState
+    readiness_detail: str
     active_bindings: int
     degraded_bindings: int
+    recent_switchovers: int
+    pending_migrations: int
     secret_count: int
     key_count: int
     usage_points_total: float

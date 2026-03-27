@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -32,10 +33,16 @@ class ExecutionRead(BaseModel):
     id: int
     function_definition_id: int
     invocation_type: str
+    idempotency_key: str | None
+    replay_of_execution_id: int | None
+    retry_count: int
     status: str
     input_json: dict[str, Any]
     output_json: dict[str, Any]
     error_text: str
+    started_at: datetime
+    completed_at: datetime | None
+    log_excerpt: str
 
 
 class FunctionsProvider(Protocol):
@@ -45,7 +52,13 @@ class FunctionsProvider(Protocol):
     async def list_functions(self, context) -> list[FunctionRead]:
         ...
 
-    async def invoke(self, context, function_id: int, payload: FunctionInvokeRequest) -> ExecutionRead:
+    async def invoke(
+        self,
+        context,
+        function_id: int,
+        payload: FunctionInvokeRequest,
+        idempotency_key: str | None = None,
+    ) -> ExecutionRead:
         ...
 
     async def list_executions(self, context, function_id: int) -> list[ExecutionRead]:

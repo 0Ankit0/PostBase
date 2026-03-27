@@ -7,7 +7,7 @@ from sqlmodel import select
 from src.apps.core.schemas import PaginatedResponse
 from src.apps.iam.api.deps import get_current_user, get_db
 from src.apps.iam.models.user import User
-from src.apps.iam.utils.hashid import decode_id_or_404
+from src.apps.iam.utils.hashid import decode_id_or_404, encode_id
 from src.apps.multitenancy.models.tenant import TenantRole
 from src.postbase.control_plane.schemas import (
     AuditLogRead,
@@ -22,6 +22,7 @@ from src.postbase.control_plane.schemas import (
     EnvironmentRead,
     NamespaceCreate,
     NamespaceRead,
+    MigrationRead,
     ProjectOverviewRead,
     ProjectCreate,
     ProjectRead,
@@ -40,22 +41,24 @@ from src.postbase.control_plane.service import (
     build_capability_health_report,
     build_project_overview,
     create_switchover_plan,
+    create_binding_version,
+    execute_switchover_plan,
     create_table_metadata,
     create_environment_for_project,
     create_namespace_metadata,
     create_project_for_tenant,
     create_secret_ref,
+    apply_schema_migration,
     ensure_environment_access,
     get_project_usage_meters,
     require_project_access,
     revoke_secret_ref,
     rotate_secret_ref,
     set_binding_status,
-    touch_updated_at,
 )
-from src.postbase.domain.enums import BindingStatus
 from src.postbase.domain.models import (
     AuditLog,
+    BindingSecretRef,
     CapabilityBinding,
     CapabilityType,
     Environment,
@@ -63,9 +66,10 @@ from src.postbase.domain.models import (
     Project,
     ProviderCatalogEntry,
     SecretRef,
+    SchemaMigration,
     SwitchoverPlan,
-    TableDefinition,
     DataNamespace,
+    TableDefinition,
     UsageMeter,
 )
 from src.postbase.platform.access import issue_environment_api_key
@@ -74,6 +78,32 @@ from src.postbase.platform.seeding import seed_provider_catalog
 from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
 
 router = APIRouter(tags=["postbase-control-plane"])
+
+
+async def _to_binding_read(
+    db: AsyncSession,
+    binding: CapabilityBinding,
+    capability: CapabilityType,
+    provider: ProviderCatalogEntry,
+) -> BindingRead:
+    linked_secret_ids = (
+        await db.execute(
+            select(BindingSecretRef.secret_ref_id).where(BindingSecretRef.binding_id == binding.id)
+        )
+    ).scalars().all()
+    return BindingRead(
+        id=binding.id,
+        environment_id=binding.environment_id,
+        capability_key=capability.key,
+        provider_key=provider.provider_key,
+        adapter_version=provider.adapter_version,
+        status=binding.status,
+        readiness_detail=binding.readiness_detail,
+        linked_secret_ref_ids=[encode_id(i) for i in linked_secret_ids],
+        supersedes_binding_id=encode_id(binding.supersedes_binding_id) if binding.supersedes_binding_id else None,
+        region=binding.region,
+        config_json=binding.config_json,
+    )
 
 
 @router.get("/provider-catalog", response_model=list[ProviderCatalogRead])
@@ -153,6 +183,7 @@ async def create_environment(
         name=payload.name,
         slug=payload.slug,
         stage=payload.stage.value,
+        region_preference=payload.region_preference,
         actor=current_user,
     )
 
@@ -196,18 +227,10 @@ async def list_bindings(
             .where(CapabilityBinding.environment_id == environment.id)
         )
     ).all()
-    return [
-        BindingRead(
-            id=binding.id,
-            environment_id=binding.environment_id,
-            capability_key=capability.key,
-            provider_key=provider.provider_key,
-            adapter_version=provider.adapter_version,
-            status=binding.status,
-            config_json=binding.config_json,
-        )
-        for binding, capability, provider in rows
-    ]
+    response: list[BindingRead] = []
+    for binding, capability, provider in rows:
+        response.append(await _to_binding_read(db, binding, capability, provider))
+    return response
 
 
 @router.post("/environments/{environment_id}/bindings", response_model=BindingRead)
@@ -243,50 +266,19 @@ async def upsert_binding(
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
 
-    binding = (
-        await db.execute(
-            select(CapabilityBinding).where(
-                CapabilityBinding.environment_id == environment.id,
-                CapabilityBinding.capability_type_id == capability.id,
-            )
-        )
-    ).scalars().first()
-    if binding is None:
-        binding = CapabilityBinding(
-            environment_id=environment.id,
-            capability_type_id=capability.id,
-            provider_catalog_entry_id=provider.id,
-            config_json=payload.config_json,
-            status=BindingStatus.ACTIVE,
-        )
-        db.add(binding)
-    else:
-        binding.provider_catalog_entry_id = provider.id
-        binding.config_json = payload.config_json
-        binding.status = BindingStatus.ACTIVE
-        touch_updated_at(binding)
-    await db.flush()
-    await record_audit_event(
+    secret_ref_ids = [decode_id_or_404(secret_ref_id) for secret_ref_id in payload.secret_ref_ids]
+    binding = await create_binding_version(
         db,
-        action="binding.upserted",
-        entity_type="capability_binding",
-        entity_id=str(binding.id),
-        actor_user_id=current_user.id,
-        tenant_id=project.tenant_id,
-        project_id=project.id,
-        environment_id=environment.id,
-        payload={"capability_key": capability.key, "provider_key": provider.provider_key},
+        environment=environment,
+        capability=capability,
+        provider=provider,
+        actor=current_user,
+        project=project,
+        config_json=payload.config_json,
+        region=payload.region,
+        secret_ref_ids=secret_ref_ids,
     )
-    await db.commit()
-    return BindingRead(
-        id=binding.id,
-        environment_id=binding.environment_id,
-        capability_key=capability.key,
-        provider_key=provider.provider_key,
-        adapter_version=provider.adapter_version,
-        status=binding.status,
-        config_json=binding.config_json,
-    )
+    return await _to_binding_read(db, binding, capability, provider)
 
 
 @router.post("/bindings/{binding_id}/switchovers", response_model=SwitchoverRead)
@@ -318,6 +310,90 @@ async def create_switchover(
         environment=environment,
         strategy=payload.strategy,
     )
+
+
+@router.post("/switchovers/{switchover_id}/execute", response_model=SwitchoverRead)
+async def execute_switchover(
+    switchover_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SwitchoverPlan:
+    switchover_db_id = decode_id_or_404(switchover_id)
+    switchover = await db.get(SwitchoverPlan, switchover_db_id)
+    if switchover is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Switchover not found")
+    binding = await db.get(CapabilityBinding, switchover.capability_binding_id)
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
+    environment = await db.get(Environment, binding.environment_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    project = await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.ADMIN,
+    )
+    return await execute_switchover_plan(
+        db,
+        switchover=switchover,
+        actor=current_user,
+        project=project,
+        environment=environment,
+    )
+
+
+@router.get("/bindings/{binding_id}/switchovers", response_model=list[SwitchoverRead])
+async def list_binding_switchovers(
+    binding_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[SwitchoverPlan]:
+    binding_db_id = decode_id_or_404(binding_id)
+    binding = await db.get(CapabilityBinding, binding_db_id)
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
+    environment = await db.get(Environment, binding.environment_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.ADMIN,
+    )
+    return (
+        await db.execute(
+            select(SwitchoverPlan)
+            .where(SwitchoverPlan.capability_binding_id == binding.id)
+            .order_by(SwitchoverPlan.created_at.desc())
+        )
+    ).scalars().all()
+
+
+@router.get("/switchovers/{switchover_id}", response_model=SwitchoverRead)
+async def get_switchover(
+    switchover_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SwitchoverPlan:
+    switchover_db_id = decode_id_or_404(switchover_id)
+    switchover = await db.get(SwitchoverPlan, switchover_db_id)
+    if switchover is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Switchover not found")
+    binding = await db.get(CapabilityBinding, switchover.capability_binding_id)
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
+    environment = await db.get(Environment, binding.environment_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.MEMBER,
+    )
+    return switchover
 
 
 @router.post("/bindings/{binding_id}/status", response_model=BindingRead)
@@ -352,15 +428,7 @@ async def update_binding_status(
         project=project,
         environment=environment,
     )
-    return BindingRead(
-        id=binding.id,
-        environment_id=binding.environment_id,
-        capability_key=capability.key,
-        provider_key=provider.provider_key,
-        adapter_version=provider.adapter_version,
-        status=binding.status,
-        config_json=binding.config_json,
-    )
+    return await _to_binding_read(db, binding, capability, provider)
 
 
 @router.get("/environments/{environment_id}/keys", response_model=list[EnvironmentApiKeyRead])
@@ -605,18 +673,9 @@ async def get_capability_health_report(
         environment=environment,
         project=project,
     )
-    bindings = [
-        BindingRead(
-            id=binding.id,
-            environment_id=binding.environment_id,
-            capability_key=capability.key,
-            provider_key=provider.provider_key,
-            adapter_version=provider.adapter_version,
-            status=binding.status,
-            config_json=binding.config_json,
-        )
-        for binding, capability, provider in binding_rows
-    ]
+    bindings: list[BindingRead] = []
+    for binding, capability, provider in binding_rows:
+        bindings.append(await _to_binding_read(db, binding, capability, provider))
     return CapabilityHealthReport(
         environment_id=environment_id,
         bindings=bindings,
@@ -716,8 +775,83 @@ async def create_table(
         policy_mode=payload.policy_mode,
         owner_column=payload.owner_column,
     )
-    provider = PostgresNativeDataProvider()
-    await provider.create_namespace(db, namespace)
-    await provider.create_table(db, namespace, definition)
+    migration = (
+        await db.execute(
+            select(SchemaMigration)
+            .where(SchemaMigration.table_definition_id == definition.id)
+            .order_by(SchemaMigration.id.desc())
+        )
+    ).scalars().first()
+    if migration is not None and migration.status.value == "applied":
+        provider = PostgresNativeDataProvider()
+        await provider.create_namespace(db, namespace)
+        await provider.create_table(db, namespace, definition)
     await db.commit()
     return definition
+
+
+@router.get("/environments/{environment_id}/migrations", response_model=list[MigrationRead])
+async def list_environment_migrations(
+    environment_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[SchemaMigration]:
+    environment_db_id = decode_id_or_404(environment_id)
+    environment = await db.get(Environment, environment_db_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.ADMIN,
+    )
+    return (
+        await db.execute(
+            select(SchemaMigration)
+            .where(SchemaMigration.environment_id == environment.id)
+            .order_by(SchemaMigration.id.desc())
+        )
+    ).scalars().all()
+
+
+@router.post(
+    "/environments/{environment_id}/migrations/{migration_id}/apply",
+    response_model=MigrationRead,
+)
+async def apply_environment_migration(
+    environment_id: str,
+    migration_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SchemaMigration:
+    environment_db_id = decode_id_or_404(environment_id)
+    migration_db_id = decode_id_or_404(migration_id)
+    environment = await db.get(Environment, environment_db_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    project = await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.ADMIN,
+    )
+    migration = await db.get(SchemaMigration, migration_db_id)
+    if migration is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    migration = await apply_schema_migration(
+        db,
+        migration=migration,
+        environment=environment,
+        project=project,
+        actor=current_user,
+    )
+    if migration.table_definition_id:
+        definition = await db.get(TableDefinition, migration.table_definition_id)
+        namespace = await db.get(DataNamespace, migration.namespace_id)
+        if definition is not None and namespace is not None:
+            provider = PostgresNativeDataProvider()
+            await provider.create_namespace(db, namespace)
+            await provider.create_table(db, namespace, definition)
+            await db.commit()
+    return migration

@@ -85,10 +85,12 @@ Backend as a Service Platform/
 
 ## Documentation Status
 
-- ✅ Requirements complete
-- ✅ Analysis complete
-- ✅ High-level design complete
-- ✅ Detailed design complete
-- ✅ Infrastructure complete
-- ✅ Edge cases complete
-- ✅ Implementation complete
+This design set is **actively maintained** and should be read together with the parity tracker in [`parity-matrix.md`](parity-matrix.md).
+
+- Requirements: documented, with implementation gaps tracked per capability.
+- Analysis: documented, with workflow depth varying by domain.
+- High-level design: documented and diagrammed; implementation parity varies by capability.
+- Detailed design: route and schema examples are design targets unless parity matrix marks them implemented.
+- Infrastructure: baseline architecture is documented; operational hardening depth is environment-specific.
+- Edge cases: behavior expectations are documented; each item is tagged as implemented/partial/planned in parity tracking.
+- Implementation: playbook and code guidelines are available; delivery sequencing is managed by the parity plan phases.

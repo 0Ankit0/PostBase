@@ -1,3 +1,5 @@
+.PHONY: copy-env setup docs docs-check backend-lint backend-test backend-dev backend-migrate frontend-lint frontend-test frontend-dev mobile-lint mobile-test mobile-dev dev-up infra-up dev-down infra-down health-check lint test dev ci
+
 copy-env:
 	./scripts/copy_env_templates.sh
 

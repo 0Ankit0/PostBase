@@ -5,8 +5,10 @@ import 'package:go_router/go_router.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/error/error_handler.dart';
 import '../../../../core/models/general_setting.dart';
+import '../../../../core/models/postbase_status.dart';
 import '../../../../core/network/api_endpoints.dart';
 import '../../../../core/providers/dio_provider.dart';
+import '../../../../core/providers/postbase_provider.dart';
 import '../../../../core/providers/system_provider.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../../notifications/data/services/push_registration_service.dart';
@@ -26,7 +28,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -48,6 +50,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage>
                 icon: Icon(Icons.notifications_outlined),
                 text: 'Notifications'),
             Tab(icon: Icon(Icons.security_outlined), text: 'Privacy'),
+            Tab(icon: Icon(Icons.cloud_outlined), text: 'Platform'),
           ],
         ),
       ),
@@ -57,6 +60,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage>
           _AccountTab(),
           _NotificationsTab(),
           _PrivacyTab(),
+          _PlatformTab(),
         ],
       ),
     );
@@ -619,6 +623,123 @@ class _PrivacyTab extends ConsumerWidget {
             ),
           ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.05),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Platform Tab ──────────────────────────────────────────────────────────────
+
+class _PlatformTab extends ConsumerWidget {
+  const _PlatformTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final platformStatusAsync = ref.watch(postBasePlatformStatusProvider);
+
+    return platformStatusAsync.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (err, _) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            ErrorHandler.handle(err).message,
+            style: const TextStyle(color: Colors.red),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
+      data: (statuses) {
+        if (statuses.isEmpty) {
+          return const Center(child: Text('No PostBase projects available.'));
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemBuilder: (context, index) {
+            final status = statuses[index];
+            return _PlatformProjectCard(status: status);
+          },
+          separatorBuilder: (_, __) => const SizedBox(height: 12),
+          itemCount: statuses.length,
+        );
+      },
+    );
+  }
+}
+
+class _PlatformProjectCard extends StatelessWidget {
+  const _PlatformProjectCard({required this.status});
+
+  final PostBaseProjectStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final overview = status.overview;
+    final firstEnvironment =
+        overview.environments.isNotEmpty ? overview.environments.first : null;
+    final health = status.primaryEnvironmentHealth;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              status.project.name,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'environments: ${overview.environmentCount} · active bindings: ${overview.activeBindings} · degraded: ${overview.degradedBindings}',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            if (firstEnvironment != null) ...[
+              const SizedBox(height: 10),
+              _SettingsRow(
+                icon: Icons.fact_check_outlined,
+                label: 'Readiness',
+                value:
+                    '${firstEnvironment.readinessState} (${firstEnvironment.status})',
+                valueColor: firstEnvironment.status == 'degraded'
+                    ? Colors.orange
+                    : Colors.green,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                firstEnvironment.readinessDetail.isEmpty
+                    ? 'No readiness details reported.'
+                    : firstEnvironment.readinessDetail,
+                style: const TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'switchovers: ${firstEnvironment.recentSwitchovers} · pending migrations: ${firstEnvironment.pendingMigrations} · usage: ${firstEnvironment.usagePointsTotal.toStringAsFixed(2)}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+            if (health != null) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: health.degradedCapabilities.isEmpty
+                    ? const [
+                        _StatusBadge(
+                            label: 'All capabilities healthy',
+                            color: Colors.green),
+                      ]
+                    : health.degradedCapabilities
+                        .map((capability) => _StatusBadge(
+                              label: 'Degraded: $capability',
+                              color: Colors.orange,
+                            ))
+                        .toList(),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

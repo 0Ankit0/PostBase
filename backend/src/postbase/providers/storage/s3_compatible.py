@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-from pathlib import Path
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession

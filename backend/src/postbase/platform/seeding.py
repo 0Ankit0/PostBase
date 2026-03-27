@@ -62,6 +62,8 @@ async def seed_provider_catalog(db: AsyncSession) -> None:
                     metadata_json={
                         "seeded": True,
                         "conformance_version": profile.conformance_version,
+                        "supported_regions": profile.supported_regions,
+                        "required_secret_kinds": profile.required_secret_kinds,
                         "supported_operations": profile.supported_operations,
                         "optional_features": profile.optional_features,
                         "limits": profile.limits,

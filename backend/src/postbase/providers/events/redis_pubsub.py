@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.apps.core.config import settings
 from src.apps.websocket.manager import manager as ws_manager
+from src.postbase.capabilities.events.webhook_delivery import deliver_webhook
 from src.postbase.capabilities.events.contracts import (
     ChannelCreateRequest,
     ChannelRead,
@@ -122,17 +125,34 @@ class RedisPubSubEventsProvider:
         deliveries: list[DeliveryRecord] = []
         for subscription in subscriptions:
             status_value = "delivered"
+            attempt_count = 1
+            delivered_at = datetime.now(timezone.utc)
+            error_text = ""
             if subscription.target_type == "room":
                 await ws_manager.push_event_to_room(
                     subscription.target_ref,
                     payload.event_name,
                     payload.payload,
                 )
+            elif subscription.target_type == "webhook":
+                webhook_result = await deliver_webhook(
+                    target_ref=subscription.target_ref,
+                    event_name=payload.event_name,
+                    payload=payload.payload,
+                )
+                status_value = webhook_result.status
+                attempt_count = webhook_result.attempt_count
+                error_text = webhook_result.error_text
+                if status_value != "delivered":
+                    delivered_at = None
             record = DeliveryRecord(
                 channel_id=channel.id,
                 subscription_id=subscription.id,
                 event_name=payload.event_name,
                 status=status_value,
+                attempt_count=attempt_count,
+                delivered_at=delivered_at,
+                error_text=error_text,
                 payload_json=payload.payload,
             )
             db.add(record)
@@ -143,6 +163,9 @@ class RedisPubSubEventsProvider:
                 subscription_id=None,
                 event_name=payload.event_name,
                 status="no_subscribers",
+                attempt_count=0,
+                delivered_at=None,
+                error_text="",
                 payload_json=payload.payload,
             )
             db.add(record)
@@ -162,6 +185,9 @@ class RedisPubSubEventsProvider:
                 subscription_id=row.subscription_id,
                 event_name=row.event_name,
                 status=row.status,
+                attempt_count=row.attempt_count,
+                delivered_at=row.delivered_at,
+                error_text=row.error_text,
                 payload_json=row.payload_json,
             )
             for row in deliveries

@@ -85,19 +85,57 @@ class CeleryRuntimeFunctionsProvider:
         )
         return [self._function_read(item) for item in rows]
 
-    async def invoke(self, context, function_id: int, payload: FunctionInvokeRequest) -> ExecutionRead:
+    async def invoke(
+        self,
+        context,
+        function_id: int,
+        payload: FunctionInvokeRequest,
+        idempotency_key: str | None = None,
+    ) -> ExecutionRead:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         function = await db.get(FunctionDefinition, function_id)
         if function is None or function.environment_id != context.environment_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Function not found")
+        if idempotency_key:
+            existing = (
+                await db.execute(
+                    select(ExecutionRecord).where(
+                        ExecutionRecord.environment_id == context.environment_id,
+                        ExecutionRecord.function_definition_id == function.id,
+                        ExecutionRecord.idempotency_key == idempotency_key,
+                    )
+                )
+            ).scalars().first()
+            if existing is not None:
+                replay = ExecutionRecord(
+                    function_definition_id=function.id,
+                    environment_id=context.environment_id,
+                    invocation_type=payload.invocation_type,
+                    idempotency_key=idempotency_key,
+                    replay_of_execution_id=existing.id,
+                    retry_count=existing.retry_count,
+                    status=existing.status,
+                    input_json=payload.payload,
+                    output_json=existing.output_json,
+                    error_text=existing.error_text,
+                    log_excerpt="idempotency replay",
+                    completed_at=datetime.now(timezone.utc),
+                )
+                db.add(replay)
+                await db.flush()
+                await db.commit()
+                return self._execution_read(replay)
         output = self._execute_handler(function, payload.payload, context)
         execution = ExecutionRecord(
             function_definition_id=function.id,
             environment_id=context.environment_id,
             invocation_type=payload.invocation_type,
+            idempotency_key=idempotency_key,
+            retry_count=0,
             status="completed",
             input_json=payload.payload,
             output_json=output,
+            log_excerpt="celery-runtime invocation completed",
             completed_at=datetime.now(timezone.utc),
         )
         db.add(execution)
@@ -158,8 +196,14 @@ class CeleryRuntimeFunctionsProvider:
             id=row.id,
             function_definition_id=row.function_definition_id,
             invocation_type=row.invocation_type,
+            idempotency_key=row.idempotency_key,
+            replay_of_execution_id=row.replay_of_execution_id,
+            retry_count=row.retry_count,
             status=row.status,
             input_json=row.input_json,
             output_json=row.output_json,
             error_text=row.error_text,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+            log_excerpt=row.log_excerpt,
         )

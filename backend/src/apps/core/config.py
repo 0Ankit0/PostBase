@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_INSTANCE_NAME: str = "fastapi-template"
     APP_REGION: str = "local"
+    POSTBASE_SECRET_ENCRYPTION_KEY: str = "postbase-dev-encryption-key"
     API_V1_STR: str = "/api/v1"
     SECRET_KEY: str = "supersecretkey"
     PASSWORD_PEPPER: str | None = None
