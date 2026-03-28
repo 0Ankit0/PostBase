@@ -54,6 +54,7 @@ export interface PostBaseMigrationRead {
   table_definition_id: string | null;
   version: string;
   status: 'pending' | 'applied' | 'failed';
+  reconciliation_status: 'pending_apply' | 'in_sync' | 'drifted';
   applied_sql: string;
   created_at: string;
 }
@@ -141,4 +142,16 @@ export interface PostBaseProjectOverview {
   usage_points_total: number;
   recent_audit_events: number;
   environments: PostBaseEnvironmentOverview[];
+}
+
+
+export interface PostBaseOperationsChecklistItem {
+  item: string;
+  completed: boolean;
+}
+
+export interface PostBaseWebhookDrainResult {
+  triggered: boolean;
+  drained_count: number;
+  checklist: PostBaseOperationsChecklistItem[];
 }

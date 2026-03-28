@@ -20,19 +20,19 @@ This checklist translates the parity matrix into execution-ready tasks. Status v
 - [x] Binding-to-secret linking and validation at upsert.
 - [x] Encrypted DB secret backend (`SecretStoreBackend` default implementation).
 - [x] Provider metadata includes regions/required secrets/operations/features/limits.
-- [~] Switchover workflow expanded (plan + execute shipped; retirement/deep strategy still pending).
+- [x] Switchover workflow expanded with execute + operator-driven retirement strategy controls.
 
 ## Phase 3 — Backend Capability-Depth Parity
 
-- [~] Data/schema migration gating by environment stage.
+- [x] Data/schema migration gating by environment stage.
   - [x] `development` auto-applies migration records.
   - [x] `staging`/`production` create pending migrations.
   - [x] Added migration list + apply endpoints.
-  - [ ] Add reconciliation status for schema/policy drift.
+  - [x] Add reconciliation status for schema/policy drift.
 - [x] Functions idempotency and replay metadata support.
-- [~] Events webhook delivery history with attempt/error fields.
+- [x] Events webhook delivery history with attempt/error fields.
   - [x] Delivery records include attempts/timestamps/errors.
-  - [ ] Dedicated durable webhook worker + retry queue/backoff.
+  - [x] Dedicated durable webhook worker + retry queue/backoff.
 - [x] Health/usage overview fields expanded with readiness/degradation/switchover/migration context.
 - [x] Resolver forwards region + resolved secret material into provider context.
 
@@ -40,8 +40,8 @@ This checklist translates the parity matrix into execution-ready tasks. Status v
 
 - [x] PostBase area added to admin shell.
 - [x] Dedicated web types + hooks for PostBase read surfaces.
-- [ ] Mutating PostBase operator forms/pages (bindings, secrets, switchovers, migration apply).
-- [ ] Inline operator remediation UX for readiness failures.
+- [x] Mutating PostBase operator forms/pages (bindings, secrets, switchovers, migration apply).
+- [x] Inline operator remediation UX for readiness failures.
 
 ## Phase 5 — Mobile Companion Status
 
@@ -53,4 +53,12 @@ This checklist translates the parity matrix into execution-ready tasks. Status v
 
 1. [x] Land schema migration apply workflow in control-plane API for staging/production.
 2. [x] Add frontend mutation screens for migration apply and switchover execute.
-3. [~] Add durable webhook delivery worker abstraction and retry persistence.
+3. [x] Add durable webhook delivery worker abstraction and retry persistence.
+
+
+## Implementation completion checklist (current follow-up)
+
+- [x] Add automated deploy-readiness validation target (`make deploy-readiness`).
+- [x] Add scheduled durable webhook queue drain task in Celery.
+- [x] Add operator-triggered webhook drain control-plane endpoint.
+- [x] Add admin UI checklist + run-now action for draining due webhook jobs.

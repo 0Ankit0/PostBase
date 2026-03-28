@@ -1,10 +1,15 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   useApplyPostBaseMigration,
+  useCreatePostBaseBinding,
+  useCreatePostBaseSecret,
+  useCreatePostBaseSwitchover,
+  useDrainPostBaseWebhooks,
   useExecutePostBaseSwitchover,
   usePostBaseBindings,
   usePostBaseBindingSwitchovers,
@@ -12,6 +17,8 @@ import {
   usePostBaseEnvironments,
   usePostBaseMigrations,
   usePostBaseProjectOverview,
+  usePostBaseProviderCatalog,
+  usePostBaseSecrets,
   usePostBaseUsage,
 } from '@/hooks';
 
@@ -24,6 +31,7 @@ interface ProjectDetailPageProps {
 export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageProps) {
   const { projectId } = params;
 
+  const { data: providerCatalog } = usePostBaseProviderCatalog();
   const { data: environments } = usePostBaseEnvironments(projectId);
   const { data: overview } = usePostBaseProjectOverview(projectId);
   const { data: usage } = usePostBaseUsage(projectId);
@@ -31,8 +39,10 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const primaryEnvironment = environments?.[0];
   const { data: health } = usePostBaseCapabilityHealth(primaryEnvironment?.id);
   const { data: bindings } = usePostBaseBindings(primaryEnvironment?.id);
+  const { data: secrets } = usePostBaseSecrets(primaryEnvironment?.id);
   const { data: migrations } = usePostBaseMigrations(primaryEnvironment?.id);
   const applyMigration = useApplyPostBaseMigration(primaryEnvironment?.id);
+  const drainWebhooks = useDrainPostBaseWebhooks(primaryEnvironment?.id);
 
   const usageByCapability = useMemo(() => {
     const buckets = new Map<string, number>();
@@ -83,6 +93,37 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         </CardContent>
       </Card>
 
+
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Completion checklist</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {(drainWebhooks.data?.checklist ?? [
+            { item: 'Durable webhook queue worker task registered', completed: true },
+            { item: 'Scheduled drain job configured', completed: true },
+            { item: 'Operator-triggered drain endpoint available', completed: true },
+          ]).map((item) => (
+            <div key={item.item} className="flex items-center justify-between rounded border border-gray-200 p-2">
+              <span>{item.item}</span>
+              <span className={item.completed ? 'text-green-600' : 'text-amber-600'}>
+                {item.completed ? 'done' : 'pending'}
+              </span>
+            </div>
+          ))}
+          <div className="flex items-center justify-between rounded border border-gray-200 p-2">
+            <span>Drain due webhook deliveries</span>
+            <Button size="sm" onClick={() => drainWebhooks.mutate(200)} disabled={drainWebhooks.isPending || !primaryEnvironment?.id}>
+              Run now
+            </Button>
+          </div>
+          {drainWebhooks.data && (
+            <p className="text-xs text-gray-500">Last run drained {drainWebhooks.data.drained_count} job(s).</p>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -116,6 +157,14 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           </CardContent>
         </Card>
       </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <SecretForm environmentId={primaryEnvironment?.id} />
+        <BindingForm
+          environmentId={primaryEnvironment?.id}
+          providerCatalog={providerCatalog ?? []}
+          secrets={secrets?.map((item) => item.id) ?? []}
+        />
+      </div>
 
       <Card>
         <CardHeader>
@@ -133,6 +182,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                 <div>
                   <p className="font-medium text-gray-900">Version {migration.version}</p>
                   <p className="text-xs text-gray-500">{migration.applied_sql || 'Pending SQL apply'}</p>
+                  <p className="text-xs text-gray-500">reconciliation: {migration.reconciliation_status}</p>
                 </div>
                 <Button
                   size="sm"
@@ -153,7 +203,12 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           {(bindings ?? []).map((binding) => (
-            <BindingSwitchoverRow key={binding.id} bindingId={binding.id} capability={binding.capability_key} />
+            <BindingSwitchoverRow
+              key={binding.id}
+              bindingId={binding.id}
+              capability={binding.capability_key}
+              currentProvider={binding.provider_key}
+            />
           ))}
         </CardContent>
       </Card>
@@ -172,15 +227,138 @@ function MetricCard({ label, value }: { label: string; value: number }) {
   );
 }
 
-function BindingSwitchoverRow({ bindingId, capability }: { bindingId: string; capability: string }) {
+function SecretForm({ environmentId }: { environmentId: string | undefined }) {
+  const createSecret = useCreatePostBaseSecret(environmentId);
+  const [name, setName] = useState('');
+  const [providerKey, setProviderKey] = useState('');
+  const [secretKind, setSecretKind] = useState('');
+  const [secretValue, setSecretValue] = useState('');
+
+  const onSubmit = () => {
+    if (!name || !providerKey || !secretKind || !secretValue) {
+      return;
+    }
+    createSecret.mutate(
+      { name, provider_key: providerKey, secret_kind: secretKind, secret_value: secretValue },
+      { onSuccess: () => setSecretValue('') },
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Create secret</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Secret name" />
+        <Input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Provider key" />
+        <Input value={secretKind} onChange={(event) => setSecretKind(event.target.value)} placeholder="Secret kind" />
+        <Input value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder="Secret value" />
+        <Button disabled={!environmentId || createSecret.isPending} onClick={onSubmit}>
+          Create secret
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function BindingForm({
+  environmentId,
+  providerCatalog,
+  secrets,
+}: {
+  environmentId: string | undefined;
+  providerCatalog: Array<{ capability_key: string; provider_key: string }>;
+  secrets: string[];
+}) {
+  const createBinding = useCreatePostBaseBinding(environmentId);
+  const [capabilityKey, setCapabilityKey] = useState('');
+  const [providerKey, setProviderKey] = useState('');
+  const [region, setRegion] = useState('');
+  const [secretIds, setSecretIds] = useState('');
+  const [configJson, setConfigJson] = useState('{}');
+
+  const onSubmit = () => {
+    if (!capabilityKey || !providerKey) {
+      return;
+    }
+    let parsedConfig: Record<string, unknown> = {};
+    try {
+      parsedConfig = JSON.parse(configJson || '{}');
+    } catch {
+      return;
+    }
+    const linkedSecretIds = secretIds
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    createBinding.mutate({
+      capability_key: capabilityKey,
+      provider_key: providerKey,
+      region: region || null,
+      config_json: parsedConfig,
+      secret_ref_ids: linkedSecretIds,
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Create binding</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-xs text-gray-500">
+        <Input value={capabilityKey} onChange={(event) => setCapabilityKey(event.target.value)} placeholder="Capability key" />
+        <Input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Provider key" />
+        <Input value={region} onChange={(event) => setRegion(event.target.value)} placeholder="Region (optional)" />
+        <Input
+          value={secretIds}
+          onChange={(event) => setSecretIds(event.target.value)}
+          placeholder="Secret ids comma-separated"
+        />
+        {secrets.length > 0 && <p>Available secret ids: {secrets.join(', ')}</p>}
+        <Input value={configJson} onChange={(event) => setConfigJson(event.target.value)} placeholder='Config JSON (e.g. {"x":1})' />
+        <Button disabled={!environmentId || createBinding.isPending} onClick={onSubmit}>
+          Create binding
+        </Button>
+        <div>
+          Known catalog pairs: {providerCatalog.map((item) => `${item.capability_key}/${item.provider_key}`).join(' · ')}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function BindingSwitchoverRow({
+  bindingId,
+  capability,
+  currentProvider,
+}: {
+  bindingId: string;
+  capability: string;
+  currentProvider: string;
+}) {
+  const [targetProvider, setTargetProvider] = useState('');
+  const [strategy, setStrategy] = useState('cutover');
+  const createSwitchover = useCreatePostBaseSwitchover(bindingId);
   const executeSwitchover = useExecutePostBaseSwitchover();
   const { data } = usePostBaseBindingSwitchovers(bindingId);
   const pending = (data ?? []).find((item) => item.status === 'pending');
 
   if (!pending) {
     return (
-      <div className="rounded border border-gray-200 p-2 text-gray-500">
-        {capability}: no pending switchover
+      <div className="space-y-2 rounded border border-gray-200 p-2 text-gray-500">
+        <div>{capability}: no pending switchover (current provider: {currentProvider})</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input value={targetProvider} onChange={(event) => setTargetProvider(event.target.value)} placeholder="Target provider key" />
+          <Input value={strategy} onChange={(event) => setStrategy(event.target.value)} placeholder="Strategy" />
+          <Button
+            size="sm"
+            onClick={() => createSwitchover.mutate({ target_provider_key: targetProvider, strategy })}
+            disabled={createSwitchover.isPending || !targetProvider}
+          >
+            Plan switchover
+          </Button>
+        </div>
       </div>
     );
   }

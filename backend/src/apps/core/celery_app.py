@@ -12,6 +12,7 @@ celery_app = Celery(
         'src.apps.core.tasks',
         'src.apps.iam.tasks',
         'src.apps.notification.tasks',
+        'src.postbase.tasks',
     ]
 )
 
@@ -28,6 +29,14 @@ celery_app.conf.update(
     # In development, run tasks inline (no worker / broker needed) unless overridden.
     task_always_eager=settings.CELERY_TASK_ALWAYS_EAGER,
     task_eager_propagates=settings.CELERY_TASK_ALWAYS_EAGER,
+
+    beat_schedule={
+        'postbase-webhook-delivery-drain': {
+            'task': 'postbase_process_webhook_delivery_jobs_task',
+            'schedule': 60.0,
+            'args': (200,),
+        },
+    },
 )
 
 if __name__ == '__main__':

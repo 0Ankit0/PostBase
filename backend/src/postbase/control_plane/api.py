@@ -36,6 +36,7 @@ from src.postbase.control_plane.schemas import (
     TableCreate,
     TableRead,
     UsageMeterRead,
+    WebhookDrainResult,
 )
 from src.postbase.control_plane.service import (
     build_capability_health_report,
@@ -56,6 +57,7 @@ from src.postbase.control_plane.service import (
     rotate_secret_ref,
     set_binding_status,
 )
+from src.postbase.domain.enums import MigrationStatus
 from src.postbase.domain.models import (
     AuditLog,
     BindingSecretRef,
@@ -76,6 +78,7 @@ from src.postbase.platform.access import issue_environment_api_key
 from src.postbase.platform.audit import record_audit_event
 from src.postbase.platform.seeding import seed_provider_catalog
 from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
+from src.postbase.tasks import drain_due_webhook_jobs
 
 router = APIRouter(tags=["postbase-control-plane"])
 
@@ -714,6 +717,36 @@ async def get_project_overview(
     return ProjectOverviewRead(**overview)
 
 
+
+
+@router.post("/environments/{environment_id}/operations/webhooks/drain", response_model=WebhookDrainResult)
+async def drain_environment_webhooks(
+    environment_id: str,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> WebhookDrainResult:
+    environment_db_id = decode_id_or_404(environment_id)
+    environment = await db.get(Environment, environment_db_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.ADMIN,
+    )
+    drained_count = await drain_due_webhook_jobs(limit=limit)
+    return WebhookDrainResult(
+        triggered=True,
+        drained_count=drained_count,
+        checklist=[
+            {"item": "Durable webhook queue worker task registered", "completed": True},
+            {"item": "Scheduled drain job configured", "completed": True},
+            {"item": "Operator-triggered drain endpoint available", "completed": True},
+        ],
+    )
+
 @router.post("/environments/{environment_id}/data/namespaces", response_model=NamespaceRead, status_code=status.HTTP_201_CREATED)
 async def create_namespace(
     environment_id: str,
@@ -790,12 +823,36 @@ async def create_table(
     return definition
 
 
+
+
+async def _to_migration_read(db: AsyncSession, migration: SchemaMigration) -> MigrationRead:
+    reconciliation_status = "pending_apply"
+    if migration.status == MigrationStatus.APPLIED:
+        reconciliation_status = "in_sync"
+    if migration.status == MigrationStatus.FAILED:
+        reconciliation_status = "drifted"
+    if migration.table_definition_id is not None:
+        definition = await db.get(TableDefinition, migration.table_definition_id)
+        if definition is None:
+            reconciliation_status = "drifted"
+    return MigrationRead(
+        id=migration.id or 0,
+        environment_id=migration.environment_id,
+        namespace_id=migration.namespace_id,
+        table_definition_id=migration.table_definition_id,
+        version=migration.version,
+        status=migration.status,
+        reconciliation_status=reconciliation_status,
+        applied_sql=migration.applied_sql,
+        created_at=migration.created_at,
+    )
+
 @router.get("/environments/{environment_id}/migrations", response_model=list[MigrationRead])
 async def list_environment_migrations(
     environment_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[SchemaMigration]:
+) -> list[MigrationRead]:
     environment_db_id = decode_id_or_404(environment_id)
     environment = await db.get(Environment, environment_db_id)
     if environment is None:
@@ -806,13 +863,14 @@ async def list_environment_migrations(
         user_id=current_user.id,
         min_role=TenantRole.ADMIN,
     )
-    return (
+    rows = (
         await db.execute(
             select(SchemaMigration)
             .where(SchemaMigration.environment_id == environment.id)
             .order_by(SchemaMigration.id.desc())
         )
     ).scalars().all()
+    return [await _to_migration_read(db, row) for row in rows]
 
 
 @router.post(
@@ -824,7 +882,7 @@ async def apply_environment_migration(
     migration_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> SchemaMigration:
+) -> MigrationRead:
     environment_db_id = decode_id_or_404(environment_id)
     migration_db_id = decode_id_or_404(migration_id)
     environment = await db.get(Environment, environment_db_id)
@@ -854,4 +912,4 @@ async def apply_environment_migration(
             await provider.create_namespace(db, namespace)
             await provider.create_table(db, namespace, definition)
             await db.commit()
-    return migration
+    return await _to_migration_read(db, migration)

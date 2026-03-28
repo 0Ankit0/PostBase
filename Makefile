@@ -1,4 +1,4 @@
-.PHONY: copy-env setup docs docs-check backend-lint backend-test backend-dev backend-migrate frontend-lint frontend-test frontend-dev mobile-lint mobile-test mobile-dev dev-up infra-up dev-down infra-down health-check lint test dev ci
+.PHONY: copy-env setup docs docs-check deploy-readiness backend-lint backend-test backend-dev backend-migrate frontend-lint frontend-test frontend-dev mobile-lint mobile-test mobile-dev dev-up infra-up dev-down infra-down health-check lint test dev ci
 
 copy-env:
 	./scripts/copy_env_templates.sh
@@ -10,6 +10,9 @@ docs:
 	python3 scripts/validate_documentation.py
 
 docs-check: docs
+
+deploy-readiness:
+	python3 scripts/check_deploy_readiness.py
 
 backend-lint:
 	cd backend && uv run ruff check src tests
@@ -79,4 +82,4 @@ dev:
 	@echo "  make frontend-dev"
 	@echo "  make mobile-dev"
 
-ci: docs lint test
+ci: docs deploy-readiness lint test

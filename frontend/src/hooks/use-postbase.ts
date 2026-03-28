@@ -15,6 +15,7 @@ import type {
   PostBaseMigrationRead,
   PostBaseSwitchoverRead,
   PostBaseUsageMeterRead,
+  PostBaseWebhookDrainResult,
 } from '@/types';
 
 export function usePostBaseProviderCatalog() {
@@ -73,6 +74,28 @@ export function usePostBaseSecrets(environmentId: string | undefined) {
     enabled: Boolean(environmentId),
     staleTime: 15_000,
   });
+}
+
+
+
+export interface PostBaseSecretCreatePayload {
+  name: string;
+  provider_key: string;
+  secret_kind: string;
+  secret_value: string;
+}
+
+export interface PostBaseBindingCreatePayload {
+  capability_key: string;
+  provider_key: string;
+  config_json?: Record<string, unknown>;
+  secret_ref_ids?: string[];
+  region?: string | null;
+}
+
+export interface PostBaseSwitchoverCreatePayload {
+  target_provider_key: string;
+  strategy?: string;
 }
 
 export function usePostBaseProjectOverview(projectId: string | undefined) {
@@ -177,6 +200,69 @@ export function useExecutePostBaseSwitchover() {
       await queryClient.invalidateQueries({
         queryKey: ['postbase'],
       });
+    },
+  });
+}
+
+
+export function useCreatePostBaseSecret(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: PostBaseSecretCreatePayload) => {
+      const response = await apiClient.post<PostBaseSecretRead>(`/environments/${environmentId}/secrets`, payload);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'secrets'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+    },
+  });
+}
+
+export function useCreatePostBaseBinding(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: PostBaseBindingCreatePayload) => {
+      const response = await apiClient.post<PostBaseBindingRead>(`/environments/${environmentId}/bindings`, payload);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'bindings'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+    },
+  });
+}
+
+export function useCreatePostBaseSwitchover(bindingId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: PostBaseSwitchoverCreatePayload) => {
+      const response = await apiClient.post<PostBaseSwitchoverRead>(`/bindings/${bindingId}/switchovers`, payload);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'bindings', bindingId, 'switchovers'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+    },
+  });
+}
+
+
+export function useDrainPostBaseWebhooks(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (limit: number = 200) => {
+      const response = await apiClient.post<PostBaseWebhookDrainResult>(
+        `/environments/${environmentId}/operations/webhooks/drain?limit=${limit}`
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'migrations'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
     },
   });
 }
