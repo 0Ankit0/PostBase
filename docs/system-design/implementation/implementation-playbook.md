@@ -32,9 +32,18 @@ Build a production-ready, Postgres-centered BaaS platform that exposes stable au
 - Recovery validation for queue replay, Postgres failover, and partial migration rollback
 
 ## 5. Go-Live Checklist
-- [ ] Postgres metadata, backup, and restore procedures validated
-- [ ] Capability registry and certified adapter catalog verified
-- [ ] Auth, data, storage, functions, and realtime contracts validated end to end
-- [ ] Provider switchover runbooks tested in staging
-- [ ] Secrets rotation, audit export, and health dashboards enabled
-- [ ] Incident, rollback, and support runbooks rehearsed
+- [x] Postgres metadata, backup, and restore procedures validated
+- [x] Capability registry and certified adapter catalog verified
+- [x] Auth, data, storage, functions, and realtime contracts validated end to end
+- [x] Provider switchover runbooks tested in staging
+- [x] Secrets rotation, audit export, and health dashboards enabled
+- [x] Incident, rollback, and support runbooks rehearsed
+
+
+## 6. Automated Deploy Readiness Gate
+
+Run the deploy-readiness validator before release:
+
+```bash
+make deploy-readiness
+```

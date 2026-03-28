@@ -276,6 +276,7 @@ class MigrationRead(EncodedModel):
     table_definition_id: int | None
     version: str
     status: MigrationStatus
+    reconciliation_status: str
     applied_sql: str
     created_at: datetime
 
@@ -284,6 +285,19 @@ class MigrationRead(EncodedModel):
         if value is None:
             return None
         return encode_id(value)
+
+
+
+
+class OperationsChecklistItem(BaseModel):
+    item: str
+    completed: bool
+
+
+class WebhookDrainResult(BaseModel):
+    triggered: bool
+    drained_count: int
+    checklist: list[OperationsChecklistItem]
 
 
 class EnvironmentOverviewRead(BaseModel):

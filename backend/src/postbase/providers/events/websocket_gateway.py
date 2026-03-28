@@ -8,7 +8,6 @@ from sqlmodel import select
 
 from src.apps.core.config import settings
 from src.apps.websocket.manager import manager as ws_manager
-from src.postbase.capabilities.events.webhook_delivery import deliver_webhook
 from src.postbase.capabilities.events.contracts import (
     ChannelCreateRequest,
     ChannelRead,
@@ -17,6 +16,7 @@ from src.postbase.capabilities.events.contracts import (
     SubscriptionCreateRequest,
     SubscriptionRead,
 )
+from src.postbase.capabilities.events.webhook_jobs import enqueue_webhook_job, process_due_webhook_jobs
 from src.postbase.domain.enums import CapabilityKey
 from src.postbase.domain.models import DeliveryRecord, EventChannel, Subscription
 from src.postbase.platform.access import validate_identifier
@@ -135,16 +135,18 @@ class WebsocketGatewayEventsProvider:
                     payload.payload,
                 )
             elif subscription.target_type == "webhook":
-                webhook_result = await deliver_webhook(
-                    target_ref=subscription.target_ref,
+                await enqueue_webhook_job(
+                    db,
+                    channel_id=channel.id,
+                    subscription_id=subscription.id,
                     event_name=payload.event_name,
-                    payload=payload.payload,
+                    payload_json=payload.payload,
+                    target_ref=subscription.target_ref,
                 )
-                status_value = webhook_result.status
-                attempt_count = webhook_result.attempt_count
-                error_text = webhook_result.error_text
-                if status_value != "delivered":
-                    delivered_at = None
+                status_value = "queued"
+                attempt_count = 0
+                delivered_at = None
+                error_text = "queued for durable delivery worker"
             record = DeliveryRecord(
                 channel_id=channel.id,
                 subscription_id=subscription.id,
@@ -157,6 +159,9 @@ class WebsocketGatewayEventsProvider:
             )
             db.add(record)
             deliveries.append(record)
+
+        deliveries.extend(await process_due_webhook_jobs(db, channel_id=channel.id))
+
         if not subscriptions:
             record = DeliveryRecord(
                 channel_id=channel.id,
