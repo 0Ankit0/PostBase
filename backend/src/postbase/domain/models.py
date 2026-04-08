@@ -111,6 +111,9 @@ class CapabilityBinding(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, default=dict),
     )
+    last_transition_actor_user_id: int | None = Field(default=None, index=True)
+    last_transition_reason: str = Field(default="", max_length=255)
+    last_transition_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

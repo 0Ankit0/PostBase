@@ -6,6 +6,8 @@ from sqlmodel import select
 from src.apps.iam.models.user import User
 from src.apps.multitenancy.models.tenant import Tenant, TenantMember, TenantRole
 from src.apps.iam.utils.hashid import encode_id
+from src.postbase.domain.enums import BindingStatus
+from src.postbase.domain.models import CapabilityBinding
 
 
 @pytest.mark.asyncio
@@ -755,3 +757,188 @@ async def test_control_plane_role_authorization_matrix_for_mutations(client, db_
                 assert detail["required_role"] == "admin"
             else:
                 assert response.status_code != 403, response.text
+
+
+@pytest.mark.asyncio
+async def test_binding_status_transition_matrix_enforces_valid_and_invalid_edges(client, db_session):
+    async def _setup_environment(email: str, username: str, tenant_slug: str, project_slug: str, env_slug: str):
+        signup_response = await client.post(
+            "/api/v1/auth/signup/?set_cookie=false",
+            json={
+                "username": username,
+                "email": email,
+                "password": "OwnerPass123!",
+                "confirm_password": "OwnerPass123!",
+            },
+        )
+        assert signup_response.status_code == 200, signup_response.text
+        owner_headers = {"Authorization": f"Bearer {signup_response.json()['access']}"}
+        owner = (await db_session.execute(select(User).where(User.email == email))).scalars().first()
+        assert owner is not None
+
+        tenant = Tenant(name=f"{username}-tenant", slug=tenant_slug, description="transition tenant", owner_id=owner.id)
+        db_session.add(tenant)
+        await db_session.flush()
+        db_session.add(
+            TenantMember(
+                tenant_id=tenant.id,
+                user_id=owner.id,
+                role=TenantRole.OWNER,
+                is_active=True,
+            )
+        )
+        await db_session.commit()
+
+        project_response = await client.post(
+            "/api/v1/projects",
+            headers=owner_headers,
+            json={
+                "tenant_id": encode_id(tenant.id),
+                "name": "Transition project",
+                "slug": project_slug,
+                "description": "Transition checks",
+            },
+        )
+        assert project_response.status_code == 201, project_response.text
+        project_id = project_response.json()["id"]
+        environment_response = await client.post(
+            f"/api/v1/projects/{project_id}/environments",
+            headers=owner_headers,
+            json={"name": "Transition env", "slug": env_slug, "stage": "staging"},
+        )
+        assert environment_response.status_code == 201, environment_response.text
+        return owner_headers, environment_response.json()["id"]
+
+    owner_headers, environment_id = await _setup_environment(
+        email="matrix-transition-owner@example.com",
+        username="matrix_transition_owner",
+        tenant_slug="matrix-transition-tenant",
+        project_slug="matrix-transition-project",
+        env_slug="matrix-transition-env",
+    )
+
+    bindings_response = await client.get(
+        f"/api/v1/environments/{environment_id}/bindings",
+        headers=owner_headers,
+    )
+    assert bindings_response.status_code == 200, bindings_response.text
+    events_binding = next(item for item in bindings_response.json() if item["capability_key"] == "events")
+
+    binding_db_id = next(
+        item.id for item in (await db_session.execute(select(CapabilityBinding))).scalars().all() if encode_id(item.id) == events_binding["id"]
+    )
+
+    allowed_targets = {
+        "pending_validation": {"active", "failed", "disabled"},
+        "active": {"deprecated", "failed", "disabled", "retired"},
+        "deprecated": {"active", "disabled", "retired"},
+        "failed": {"pending_validation", "active", "disabled", "retired"},
+        "disabled": {"pending_validation", "active", "retired"},
+        "retired": set(),
+    }
+    states = list(allowed_targets.keys())
+    for source in states:
+        binding = await db_session.get(CapabilityBinding, binding_db_id)
+        assert binding is not None
+        binding.status = BindingStatus(source)
+        await db_session.commit()
+        for target in states:
+            if source == target:
+                continue
+            response = await client.post(
+                f"/api/v1/bindings/{events_binding['id']}/status",
+                headers=owner_headers,
+                json={"status": target, "reason": f"{source}_to_{target}"},
+            )
+            if target in allowed_targets[source]:
+                assert response.status_code == 200, response.text
+                assert response.json()["status"] == target
+            else:
+                assert response.status_code == 409, response.text
+                detail = response.json()["detail"]
+                assert detail["code"] == "binding_invalid_status_transition"
+                assert detail["from_status"] == source
+                assert detail["to_status"] == target
+
+
+@pytest.mark.asyncio
+async def test_binding_status_transition_uniqueness_and_audit_metadata(client, db_session):
+    signup_response = await client.post(
+        "/api/v1/auth/signup/?set_cookie=false",
+        json={
+            "username": "matrix_audit_owner",
+            "email": "matrix-audit-owner@example.com",
+            "password": "OwnerPass123!",
+            "confirm_password": "OwnerPass123!",
+        },
+    )
+    assert signup_response.status_code == 200, signup_response.text
+    owner_headers = {"Authorization": f"Bearer {signup_response.json()['access']}"}
+    owner = (await db_session.execute(select(User).where(User.email == "matrix-audit-owner@example.com"))).scalars().first()
+    assert owner is not None
+
+    tenant = Tenant(name="audit-tenant", slug="audit-tenant", description="audit tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+
+    project_response = await client.post(
+        "/api/v1/projects",
+        headers=owner_headers,
+        json={
+            "tenant_id": encode_id(tenant.id),
+            "name": "Audit project",
+            "slug": "audit-project",
+            "description": "Audit checks",
+        },
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["id"]
+    environment_response = await client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        headers=owner_headers,
+        json={"name": "Audit env", "slug": "audit-env", "stage": "staging"},
+    )
+    assert environment_response.status_code == 201, environment_response.text
+    environment_id = environment_response.json()["id"]
+
+    bindings_response = await client.get(
+        f"/api/v1/environments/{environment_id}/bindings",
+        headers=owner_headers,
+    )
+    assert bindings_response.status_code == 200, bindings_response.text
+    bindings = bindings_response.json()
+    storage_binding = next(item for item in bindings if item["capability_key"] == "storage")
+
+    replacement_response = await client.post(
+        f"/api/v1/environments/{environment_id}/bindings",
+        headers=owner_headers,
+        json={
+            "capability_key": "storage",
+            "provider_key": "s3-compatible",
+            "region": "global",
+            "config_json": {"bucket": "matrix-bucket"},
+            "secret_ref_ids": [],
+        },
+    )
+    assert replacement_response.status_code == 200, replacement_response.text
+
+    activate_old_response = await client.post(
+        f"/api/v1/bindings/{storage_binding['id']}/status",
+        headers=owner_headers,
+        json={"status": "active", "reason": "reactivate old storage"},
+    )
+    assert activate_old_response.status_code == 409, activate_old_response.text
+    detail = activate_old_response.json()["detail"]
+    assert detail["code"] == "binding_active_uniqueness_conflict"
+
+    disabled_response = await client.post(
+        f"/api/v1/bindings/{storage_binding['id']}/status",
+        headers=owner_headers,
+        json={"status": "disabled", "reason": "temporary shutdown"},
+    )
+    assert disabled_response.status_code == 200, disabled_response.text
+    payload = disabled_response.json()
+    assert payload["last_transition_reason"] == "temporary shutdown"
+    assert payload["last_transition_actor_user_id"] is not None
