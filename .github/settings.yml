@@ -1,0 +1,41 @@
+# Managed by Probot Settings app (or compatible GitHub settings sync tooling).
+# Ensures release gating checks are required before merges/releases.
+branches:
+  - name: main
+    protection:
+      required_status_checks:
+        strict: true
+        contexts:
+          - docs
+          - deploy-readiness
+      enforce_admins: true
+      required_pull_request_reviews:
+        dismiss_stale_reviews: true
+        require_code_owner_reviews: true
+      restrictions: null
+
+  - name: develop
+    protection:
+      required_status_checks:
+        strict: true
+        contexts:
+          - docs
+          - deploy-readiness
+      enforce_admins: true
+      required_pull_request_reviews:
+        dismiss_stale_reviews: true
+        require_code_owner_reviews: true
+      restrictions: null
+
+  - name: release/**
+    protection:
+      required_status_checks:
+        strict: true
+        contexts:
+          - docs
+          - deploy-readiness
+      enforce_admins: true
+      required_pull_request_reviews:
+        dismiss_stale_reviews: true
+        require_code_owner_reviews: true
+      restrictions: null
