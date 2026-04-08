@@ -645,3 +645,113 @@ async def test_postbase_provider_switchovers_to_alternate_adapters(client, db_se
     assert "inline-runtime" in health_entries
     assert "local-disk" in health_entries
     assert "websocket-gateway" in health_entries
+
+
+@pytest.mark.asyncio
+async def test_control_plane_role_authorization_matrix_for_mutations(client, db_session):
+    async def _signup(email: str, username: str) -> tuple[dict[str, str], User]:
+        response = await client.post(
+            "/api/v1/auth/signup/?set_cookie=false",
+            json={
+                "username": username,
+                "email": email,
+                "password": "RoleMatrix123!",
+                "confirm_password": "RoleMatrix123!",
+            },
+        )
+        assert response.status_code == 200, response.text
+        user = (await db_session.execute(select(User).where(User.email == email))).scalars().first()
+        assert user is not None
+        return {"Authorization": f"Bearer {response.json()['access']}"}, user
+
+    owner_headers, owner = await _signup("matrix-owner@example.com", "matrix_owner")
+    admin_headers, admin = await _signup("matrix-admin@example.com", "matrix_admin")
+    member_headers, member = await _signup("matrix-member@example.com", "matrix_member")
+
+    tenant = Tenant(name="Matrix", slug="matrix", description="Role matrix tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True),
+            TenantMember(tenant_id=tenant.id, user_id=admin.id, role=TenantRole.ADMIN, is_active=True),
+            TenantMember(tenant_id=tenant.id, user_id=member.id, role=TenantRole.MEMBER, is_active=True),
+        ]
+    )
+    await db_session.commit()
+
+    project_response = await client.post(
+        "/api/v1/projects",
+        headers=owner_headers,
+        json={
+            "tenant_id": encode_id(tenant.id),
+            "name": "Role matrix project",
+            "slug": "role-matrix-project",
+            "description": "Role matrix coverage",
+        },
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["id"]
+
+    environment_response = await client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        headers=owner_headers,
+        json={"name": "Role Matrix Environment", "slug": "role-matrix-env", "stage": "staging"},
+    )
+    assert environment_response.status_code == 201, environment_response.text
+    environment_id = environment_response.json()["id"]
+
+    bindings_response = await client.get(
+        f"/api/v1/environments/{environment_id}/bindings",
+        headers=owner_headers,
+    )
+    assert bindings_response.status_code == 200, bindings_response.text
+    bindings = bindings_response.json()
+    assert bindings
+    storage_binding = next(item for item in bindings if item["capability_key"] == "storage")
+
+    namespace_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces",
+        headers=owner_headers,
+        json={"name": "matrix_ns"},
+    )
+    assert namespace_response.status_code == 201, namespace_response.text
+    namespace_id = namespace_response.json()["id"]
+    table_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces/{namespace_id}/tables",
+        headers=owner_headers,
+        json={
+            "table_name": "matrix_table",
+            "columns": [{"name": "id", "type": "text", "nullable": False, "primary_key": True}],
+            "policy_mode": "owner_guarded",
+            "owner_column": "id",
+        },
+    )
+    assert table_response.status_code == 201, table_response.text
+    migrations_response = await client.get(
+        f"/api/v1/environments/{environment_id}/migrations",
+        headers=owner_headers,
+    )
+    assert migrations_response.status_code == 200, migrations_response.text
+    migration_id = str(migrations_response.json()[0]["id"])
+
+    role_headers = {"owner": owner_headers, "admin": admin_headers, "member": member_headers}
+    mutation_requests = [
+        ("bindings", "post", f"/api/v1/environments/{environment_id}/bindings", {"capability_key": "storage", "provider_key": "local-disk", "region": "us-east-1", "config_json": {}, "secret_ref_ids": []}),
+        ("secrets", "post", f"/api/v1/environments/{environment_id}/secrets", {"name": "matrix-secret", "provider_key": "vault", "secret_kind": "api_key", "secret_value": "matrix-value"}),
+        ("migrations", "post", f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply", None),
+        ("switchovers", "post", f"/api/v1/bindings/{storage_binding['id']}/switchovers", {"target_provider_key": "local-disk", "strategy": "cutover"}),
+        ("webhook_drain", "post", f"/api/v1/environments/{environment_id}/operations/webhooks/drain", None),
+    ]
+
+    for role, headers in role_headers.items():
+        for _, method, url, payload in mutation_requests:
+            response = await getattr(client, method)(url, headers=headers, json=payload)
+            if role == "member":
+                assert response.status_code == 403, response.text
+                detail = response.json()["detail"]
+                assert detail["code"] == "control_plane_forbidden"
+                assert detail["message"] == "insufficient_role"
+                assert detail["required_role"] == "admin"
+            else:
+                assert response.status_code != 403, response.text
