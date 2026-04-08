@@ -67,3 +67,24 @@
 | implemented | Delivered and validated in this repository. |
 | partial | Reserved for future in-progress slices when only part of a workflow ships. |
 | planned | Reserved for documented intent before implementation starts. |
+
+## API/Schema and ERD Conformance Tickets (2026-04-08)
+
+| Ticket | Mismatch | Type | Resolution |
+|---|---|---|---|
+| PB-CONF-001 | API design listed unscoped data control-plane endpoints (`/data/namespaces`, `/data/tables`) while code uses environment-scoped control-plane paths. | docs update | Updated API design endpoint inventory to match mounted control-plane routes. |
+| PB-CONF-002 | API design listed `/reports/capability-health` without environment scope while code requires `/environments/{envId}/reports/capability-health`. | docs update | Updated report endpoint path to environment-scoped route. |
+| PB-CONF-003 | API design listed `POST /events/subscriptions` but capability API requires channel context (`/events/subscriptions/{channelId}`) and exposes explicit channel/publish routes. | docs update | Updated events endpoint set to channel + subscription + publish routes. |
+| PB-CONF-004 | API design examples included fields not present in current request schemas (`adapterVersion`, `targetAdapterVersion`, `requestedBy`). | docs update | Updated request examples to current `BindingCreate` and `SwitchoverCreate` schema shape. |
+| PB-CONF-005 | API design implied universal cursor pagination and broad idempotency scope not fully implemented across routes. | docs update | Clarified current partial pagination/idempotency coverage and noted planned expansion. |
+| PB-CONF-006 | ERD omitted implemented domain tables (`postbase_environment_api_key`, `postbase_binding_secret_ref`, `postbase_policy_definition`, `postbase_delivery_record`, `postbase_webhook_delivery_job`). | docs update | Added missing entities and relationships in ERD + table notes. |
+| PB-CONF-007 | ERD table names used generic aliases instead of actual SQLModel table names (`postbase_*`). | docs update | Updated table notes to concrete table names used in domain models. |
+| PB-CONF-008 | ERD relationship depth did not show implemented auth/event/data linkage details (environment-scoped auth users, delivery/webhook job lineage, table policy linkage). | docs update | Expanded relationship graph to reflect implemented FK topology. |
+
+## Conformance Complete Checklist
+
+- [x] Reconciled API design endpoint inventory with current control-plane and capability routers.
+- [x] Reconciled API example payloads with current Pydantic request schema fields.
+- [x] Reconciled ERD entity set with implemented SQLModel/domain tables.
+- [x] Reconciled ERD relationship graph with implemented foreign-key topology.
+- [x] Recorded per-diff ticket IDs with explicit remediation type (`docs update`, `code update`, `both`).
