@@ -171,6 +171,11 @@ async def _to_binding_read(
         readiness_detail=binding.readiness_detail,
         linked_secret_ref_ids=[encode_id(i) for i in linked_secret_ids],
         supersedes_binding_id=encode_id(binding.supersedes_binding_id) if binding.supersedes_binding_id else None,
+        last_transition_actor_user_id=encode_id(binding.last_transition_actor_user_id)
+        if binding.last_transition_actor_user_id
+        else None,
+        last_transition_reason=binding.last_transition_reason,
+        last_transition_at=binding.last_transition_at,
         region=binding.region,
         config_json=binding.config_json,
     )
@@ -459,6 +464,7 @@ async def update_binding_status(
         db,
         binding=binding,
         status_value=payload.status,
+        reason=payload.reason,
         actor=current_user,
         project=project,
         environment=environment,

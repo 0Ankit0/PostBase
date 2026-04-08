@@ -102,6 +102,9 @@ class BindingRead(EncodedModel):
     readiness_detail: str
     linked_secret_ref_ids: list[str]
     supersedes_binding_id: str | None
+    last_transition_actor_user_id: str | None
+    last_transition_reason: str
+    last_transition_at: datetime | None
     region: str | None
     config_json: dict[str, Any]
 
@@ -112,6 +115,7 @@ class BindingRead(EncodedModel):
 
 class BindingStatusUpdate(BaseModel):
     status: BindingStatus
+    reason: str | None = None
 
 
 class SwitchoverCreate(BaseModel):

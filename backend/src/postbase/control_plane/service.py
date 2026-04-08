@@ -60,6 +60,42 @@ REQUIRED_OPERATIONS: dict[CapabilityKey, set[str]] = {
     CapabilityKey.FUNCTIONS: {"create", "list", "invoke", "executions"},
     CapabilityKey.EVENTS: {"channels", "subscriptions", "publish"},
 }
+LEGAL_BINDING_STATUS_TRANSITIONS: dict[BindingStatus, set[BindingStatus]] = {
+    BindingStatus.PENDING_VALIDATION: {
+        BindingStatus.ACTIVE,
+        BindingStatus.FAILED,
+        BindingStatus.DISABLED,
+    },
+    BindingStatus.ACTIVE: {
+        BindingStatus.DEPRECATED,
+        BindingStatus.FAILED,
+        BindingStatus.DISABLED,
+        BindingStatus.RETIRED,
+    },
+    BindingStatus.DEPRECATED: {
+        BindingStatus.ACTIVE,
+        BindingStatus.DISABLED,
+        BindingStatus.RETIRED,
+    },
+    BindingStatus.FAILED: {
+        BindingStatus.PENDING_VALIDATION,
+        BindingStatus.ACTIVE,
+        BindingStatus.DISABLED,
+        BindingStatus.RETIRED,
+    },
+    BindingStatus.DISABLED: {
+        BindingStatus.PENDING_VALIDATION,
+        BindingStatus.ACTIVE,
+        BindingStatus.RETIRED,
+    },
+    BindingStatus.RETIRED: set(),
+    BindingStatus.PENDING: {
+        BindingStatus.PENDING_VALIDATION,
+        BindingStatus.ACTIVE,
+        BindingStatus.FAILED,
+        BindingStatus.DISABLED,
+    },
+}
 
 
 def _forbidden_role_payload(*, required_role: TenantRole) -> dict[str, str]:
@@ -68,6 +104,54 @@ def _forbidden_role_payload(*, required_role: TenantRole) -> dict[str, str]:
         "message": "insufficient_role",
         "required_role": required_role.value,
     }
+
+
+def _invalid_binding_transition_payload(
+    *,
+    binding_id: int,
+    current_status: BindingStatus,
+    target_status: BindingStatus,
+) -> dict[str, object]:
+    return {
+        "code": "binding_invalid_status_transition",
+        "message": "invalid_status_transition",
+        "binding_id": encode_id(binding_id),
+        "from_status": current_status.value,
+        "to_status": target_status.value,
+    }
+
+
+def _active_binding_conflict_payload(
+    *,
+    binding_id: int,
+    conflicting_binding_id: int,
+) -> dict[str, object]:
+    return {
+        "code": "binding_active_uniqueness_conflict",
+        "message": "active_binding_conflict",
+        "binding_id": encode_id(binding_id),
+        "conflicting_binding_id": encode_id(conflicting_binding_id),
+    }
+
+
+def _assert_binding_transition_is_legal(
+    *,
+    binding_id: int,
+    current_status: BindingStatus,
+    target_status: BindingStatus,
+) -> None:
+    if current_status == target_status:
+        return
+    allowed_targets = LEGAL_BINDING_STATUS_TRANSITIONS.get(current_status, set())
+    if target_status not in allowed_targets:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_invalid_binding_transition_payload(
+                binding_id=binding_id,
+                current_status=current_status,
+                target_status=target_status,
+            ),
+        )
 
 
 async def require_tenant_role(
@@ -760,6 +844,9 @@ async def create_binding_version(
         status=BindingStatus.PENDING_VALIDATION,
         region=region,
         supersedes_binding_id=current_active.id if current_active else None,
+        last_transition_actor_user_id=actor.id,
+        last_transition_reason="binding_version_created",
+        last_transition_at=datetime.now(timezone.utc),
     )
     db.add(binding)
     await db.flush()
@@ -796,6 +883,9 @@ async def create_binding_version(
         binding.readiness_detail = "validated"
         if current_active is not None:
             current_active.status = BindingStatus.DEPRECATED
+            current_active.last_transition_actor_user_id = actor.id
+            current_active.last_transition_reason = "superseded_by_new_active_binding"
+            current_active.last_transition_at = datetime.now(timezone.utc)
             touch_updated_at(current_active)
         environment.readiness_state = ReadinessState.READY
         environment.status = EnvironmentStatus.ACTIVE
@@ -833,11 +923,40 @@ async def set_binding_status(
     *,
     binding: CapabilityBinding,
     status_value: BindingStatus,
+    reason: str | None,
     actor: User,
     project: Project,
     environment: Environment,
 ) -> CapabilityBinding:
+    _assert_binding_transition_is_legal(
+        binding_id=binding.id,
+        current_status=binding.status,
+        target_status=status_value,
+    )
+    if status_value == BindingStatus.ACTIVE:
+        active_conflict = (
+            await db.execute(
+                select(CapabilityBinding).where(
+                    CapabilityBinding.environment_id == binding.environment_id,
+                    CapabilityBinding.capability_type_id == binding.capability_type_id,
+                    CapabilityBinding.status == BindingStatus.ACTIVE,
+                    CapabilityBinding.id != binding.id,
+                )
+            )
+        ).scalars().first()
+        if active_conflict is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_active_binding_conflict_payload(
+                    binding_id=binding.id,
+                    conflicting_binding_id=active_conflict.id,
+                ),
+            )
+
     binding.status = status_value
+    binding.last_transition_actor_user_id = actor.id
+    binding.last_transition_reason = reason or "manual_status_update"
+    binding.last_transition_at = datetime.now(timezone.utc)
     touch_updated_at(binding)
     await db.flush()
     await record_audit_event(
@@ -849,7 +968,7 @@ async def set_binding_status(
         tenant_id=project.tenant_id,
         project_id=project.id,
         environment_id=environment.id,
-        payload={"status": status_value.value},
+        payload={"status": status_value.value, "reason": binding.last_transition_reason},
     )
     await db.commit()
     await db.refresh(binding)
