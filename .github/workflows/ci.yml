@@ -2,9 +2,9 @@ name: Template CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'release/**']
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, 'release/**']
 
 jobs:
   docs:
@@ -14,8 +14,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - name: Validate documentation
-        run: python3 scripts/validate_documentation.py
+      - name: Run docs gate
+        run: make docs
+
+  deploy-readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Run deploy-readiness gate
+        run: make deploy-readiness
 
   backend:
     runs-on: ubuntu-latest

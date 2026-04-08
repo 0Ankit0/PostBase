@@ -14,6 +14,7 @@ This `docs/` directory is the source of truth for PostBase documentation. The ca
 - `system-design/implementation/` — coding and rollout playbook guidance.
 - `system-design/parity-matrix.md` — requirement and API parity tracking against the current codebase.
 - `system-design/implementation/parity-implementation-checklist.md` — actionable phase checklist used to drive implementation slices.
+- `system-design/implementation/release-gate-checklist.md` — release gate requirements, sign-off owners, and branch protection expectations.
 
 ## Validation
 

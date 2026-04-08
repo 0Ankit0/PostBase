@@ -47,3 +47,8 @@ Run the deploy-readiness validator before release:
 ```bash
 make deploy-readiness
 ```
+
+
+## 7. Release Gate Ownership and Sign-Offs
+
+Follow `release-gate-checklist.md` before tagging a release. Release tags require recorded sign-off from backend lead, frontend lead, SRE, and security in addition to green CI gates for `make docs` and `make deploy-readiness`.
