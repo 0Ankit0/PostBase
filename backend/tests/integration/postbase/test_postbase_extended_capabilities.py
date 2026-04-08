@@ -307,8 +307,66 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         json={"secret_value": "rotated-secret-9876"},
     )
     assert rotate_response.status_code == 200, rotate_response.text
-    assert rotate_response.json()["last_four"] == "9876"
-    assert rotate_response.json()["status"] == "active"
+    assert rotate_response.json()["secret"]["last_four"] == "9876"
+    assert rotate_response.json()["secret"]["status"] == "active"
+    assert rotate_response.json()["rollback_ready"] is True
+
+    webhook_channel_response = await client.post(
+        "/api/v1/events/channels",
+        headers={"X-PostBase-Key": service_key},
+        json={"channel_key": "ops-webhooks", "description": "Webhook channel"},
+    )
+    assert webhook_channel_response.status_code == 200, webhook_channel_response.text
+    webhook_channel_id = webhook_channel_response.json()["id"]
+    webhook_subscription_response = await client.post(
+        f"/api/v1/events/subscriptions/{webhook_channel_id}",
+        headers={"X-PostBase-Key": service_key},
+        json={"target_type": "webhook", "target_ref": "https://hooks.example.com/fail", "config_json": {}},
+    )
+    assert webhook_subscription_response.status_code == 200, webhook_subscription_response.text
+    for _ in range(3):
+        publish_webhook_response = await client.post(
+            f"/api/v1/events/publish/{webhook_channel_id}",
+            headers={"X-PostBase-Key": service_key},
+            json={"event_name": "ops.retry.exhausted", "payload": {}},
+        )
+        assert publish_webhook_response.status_code == 200, publish_webhook_response.text
+
+    webhook_recover_response = await client.post(
+        f"/api/v1/environments/{environment_id}/operations/webhooks/recover-exhausted",
+        headers=owner_headers,
+    )
+    assert webhook_recover_response.status_code == 200, webhook_recover_response.text
+    assert webhook_recover_response.json()["requeued_jobs"] >= 1
+
+    namespace_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces",
+        headers=owner_headers,
+        json={"name": "opsdata"},
+    )
+    assert namespace_response.status_code == 201, namespace_response.text
+    namespace_id = namespace_response.json()["id"]
+    table_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces/{namespace_id}/tables",
+        headers=owner_headers,
+        json={
+            "table_name": "deployments",
+            "columns": [{"name": "id", "type": "uuid", "nullable": False, "primary_key": True}],
+            "policy_mode": "authenticated",
+        },
+    )
+    assert table_response.status_code == 201, table_response.text
+    migrations_response = await client.get(
+        f"/api/v1/environments/{environment_id}/migrations",
+        headers=owner_headers,
+    )
+    assert migrations_response.status_code == 200, migrations_response.text
+    rollback_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migrations_response.json()[0]['id']}/rollback",
+        headers=owner_headers,
+    )
+    assert rollback_response.status_code == 200, rollback_response.text
+    assert rollback_response.json()["rollback_status"] == "requested"
 
     bindings_response = await client.get(
         f"/api/v1/environments/{environment_id}/bindings",
