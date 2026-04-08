@@ -89,6 +89,17 @@ from src.postbase.tasks import drain_due_webhook_jobs
 
 router = APIRouter(tags=["postbase-control-plane"])
 MUTATION_MIN_ROLE = TenantRole.ADMIN
+CONTROL_PLANE_MUTATION_MIN_ROLES: dict[str, TenantRole] = {
+    "bindings": TenantRole.ADMIN,
+    "switchovers": TenantRole.ADMIN,
+    "secrets": TenantRole.ADMIN,
+    "migrations": TenantRole.ADMIN,
+    "webhook_drain": TenantRole.ADMIN,
+    "webhook_recover": TenantRole.ADMIN,
+    "environment_keys": TenantRole.ADMIN,
+    "namespaces": TenantRole.ADMIN,
+    "tables": TenantRole.ADMIN,
+}
 
 
 async def _load_environment_or_404(db: AsyncSession, environment_id: str) -> Environment:
@@ -104,12 +115,14 @@ async def _authorize_environment_mutation(
     *,
     environment: Environment,
     current_user: User,
+    action: str,
 ) -> Project:
+    min_role = CONTROL_PLANE_MUTATION_MIN_ROLES.get(action, MUTATION_MIN_ROLE)
     return await ensure_environment_access(
         db,
         environment=environment,
         user_id=current_user.id,
-        min_role=MUTATION_MIN_ROLE,
+        min_role=min_role,
     )
 
 
@@ -118,6 +131,7 @@ async def _load_binding_environment_and_project(
     *,
     binding_id: str,
     current_user: User,
+    action: str,
 ) -> tuple[CapabilityBinding, Environment, Project]:
     binding_db_id = decode_id_or_404(binding_id)
     binding = await db.get(CapabilityBinding, binding_db_id)
@@ -126,7 +140,12 @@ async def _load_binding_environment_and_project(
     environment = await db.get(Environment, binding.environment_id)
     if environment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action=action,
+    )
     return binding, environment, project
 
 
@@ -135,6 +154,7 @@ async def _load_switchover_context(
     *,
     switchover_id: str,
     current_user: User,
+    action: str,
 ) -> tuple[SwitchoverPlan, CapabilityBinding, Environment, Project]:
     switchover_db_id = decode_id_or_404(switchover_id)
     switchover = await db.get(SwitchoverPlan, switchover_db_id)
@@ -146,7 +166,12 @@ async def _load_switchover_context(
     environment = await db.get(Environment, binding.environment_id)
     if environment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action=action,
+    )
     return switchover, binding, environment, project
 
 
@@ -316,7 +341,12 @@ async def upsert_binding(
     current_user: User = Depends(get_current_user),
 ) -> BindingRead:
     environment = await _load_environment_or_404(db, environment_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="bindings",
+    )
     capability = (
         await db.execute(select(CapabilityType).where(CapabilityType.key == payload.capability_key))
     ).scalars().first()
@@ -359,6 +389,7 @@ async def create_switchover(
         db,
         binding_id=binding_id,
         current_user=current_user,
+        action="switchovers",
     )
     return await create_switchover_plan(
         db,
@@ -381,6 +412,7 @@ async def execute_switchover(
         db,
         switchover_id=switchover_id,
         current_user=current_user,
+        action="switchovers",
     )
     return await execute_switchover_plan(
         db,
@@ -455,6 +487,7 @@ async def update_binding_status(
         db,
         binding_id=binding_id,
         current_user=current_user,
+        action="bindings",
     )
     capability = await db.get(CapabilityType, binding.capability_type_id)
     provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
@@ -498,7 +531,12 @@ async def create_environment_key(
     current_user: User = Depends(get_current_user),
 ) -> EnvironmentApiKeyIssued:
     environment = await _load_environment_or_404(db, environment_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="environment_keys",
+    )
     api_key, plaintext_key = await issue_environment_api_key(
         db,
         environment_id=environment.id,
@@ -533,7 +571,12 @@ async def revoke_environment_key(
 ) -> None:
     environment = await _load_environment_or_404(db, environment_id)
     key_db_id = decode_id_or_404(key_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="environment_keys",
+    )
     key_row = await db.get(EnvironmentApiKey, key_db_id)
     if key_row is None or key_row.environment_id != environment.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
@@ -576,7 +619,12 @@ async def create_environment_secret(
     current_user: User = Depends(get_current_user),
 ) -> SecretRef:
     environment = await _load_environment_or_404(db, environment_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="secrets",
+    )
     return await create_secret_ref(
         db,
         environment=environment,
@@ -599,7 +647,12 @@ async def rotate_environment_secret(
 ) -> SecretRotateResult:
     environment = await _load_environment_or_404(db, environment_id)
     secret_db_id = decode_id_or_404(secret_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="secrets",
+    )
     secret_ref = await db.get(SecretRef, secret_db_id)
     if secret_ref is None or secret_ref.environment_id != environment.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Secret not found")
@@ -634,7 +687,12 @@ async def revoke_environment_secret(
 ) -> None:
     environment = await _load_environment_or_404(db, environment_id)
     secret_db_id = decode_id_or_404(secret_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="secrets",
+    )
     secret_ref = await db.get(SecretRef, secret_db_id)
     if secret_ref is None or secret_ref.environment_id != environment.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Secret not found")
@@ -737,7 +795,12 @@ async def drain_environment_webhooks(
     current_user: User = Depends(get_current_user),
 ) -> WebhookDrainResult:
     environment = await _load_environment_or_404(db, environment_id)
-    await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="webhook_drain",
+    )
     drained_count = await drain_due_webhook_jobs(limit=limit)
     return WebhookDrainResult(
         triggered=True,
@@ -758,7 +821,12 @@ async def recover_exhausted_webhooks(
     current_user: User = Depends(get_current_user),
 ) -> WebhookRecoveryResult:
     environment = await _load_environment_or_404(db, environment_id)
-    await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="webhook_recover",
+    )
     failed_jobs = (
         await db.execute(
             select(WebhookDeliveryJob)
@@ -789,7 +857,12 @@ async def create_namespace(
     current_user: User = Depends(get_current_user),
 ) -> NamespaceRead:
     environment = await _load_environment_or_404(db, environment_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="namespaces",
+    )
     return await create_namespace_metadata(
         db,
         environment=environment,
@@ -816,7 +889,12 @@ async def create_table(
     namespace = await db.get(DataNamespace, namespace_db_id)
     if namespace is None or namespace.environment_id != environment.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Namespace not found")
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="tables",
+    )
     definition = await create_table_metadata(
         db,
         namespace=namespace,
@@ -905,7 +983,12 @@ async def apply_environment_migration(
 ) -> MigrationRead:
     environment = await _load_environment_or_404(db, environment_id)
     migration_db_id = decode_id_or_404(migration_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="migrations",
+    )
     migration = await db.get(SchemaMigration, migration_db_id)
     if migration is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
@@ -939,7 +1022,12 @@ async def rollback_environment_migration(
 ) -> MigrationRollbackResult:
     environment = await _load_environment_or_404(db, environment_id)
     migration_db_id = decode_id_or_404(migration_id)
-    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="migrations",
+    )
     migration = await db.get(SchemaMigration, migration_db_id)
     if migration is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
