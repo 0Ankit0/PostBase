@@ -736,14 +736,30 @@ async def test_control_plane_role_authorization_matrix_for_mutations(client, db_
     )
     assert migrations_response.status_code == 200, migrations_response.text
     migration_id = str(migrations_response.json()[0]["id"])
+    seed_secret_response = await client.post(
+        f"/api/v1/environments/{environment_id}/secrets",
+        headers=owner_headers,
+        json={
+            "name": "matrix-seed-secret",
+            "provider_key": "vault",
+            "secret_kind": "api_key",
+            "secret_value": "matrix-seed-value",
+        },
+    )
+    assert seed_secret_response.status_code == 201, seed_secret_response.text
+    seed_secret_id = seed_secret_response.json()["id"]
 
     role_headers = {"owner": owner_headers, "admin": admin_headers, "member": member_headers}
     mutation_requests = [
         ("bindings", "post", f"/api/v1/environments/{environment_id}/bindings", {"capability_key": "storage", "provider_key": "local-disk", "region": "us-east-1", "config_json": {}, "secret_ref_ids": []}),
         ("secrets", "post", f"/api/v1/environments/{environment_id}/secrets", {"name": "matrix-secret", "provider_key": "vault", "secret_kind": "api_key", "secret_value": "matrix-value"}),
+        ("secrets_rotate", "post", f"/api/v1/environments/{environment_id}/secrets/{seed_secret_id}/rotate", {"secret_value": "matrix-updated-value"}),
+        ("secrets_revoke", "delete", f"/api/v1/environments/{environment_id}/secrets/{seed_secret_id}", None),
         ("migrations", "post", f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply", None),
+        ("migrations_rollback", "post", f"/api/v1/environments/{environment_id}/migrations/{migration_id}/rollback", None),
         ("switchovers", "post", f"/api/v1/bindings/{storage_binding['id']}/switchovers", {"target_provider_key": "local-disk", "strategy": "cutover"}),
         ("webhook_drain", "post", f"/api/v1/environments/{environment_id}/operations/webhooks/drain", None),
+        ("webhook_recover", "post", f"/api/v1/environments/{environment_id}/operations/webhooks/recover-exhausted", None),
     ]
 
     for role, headers in role_headers.items():
