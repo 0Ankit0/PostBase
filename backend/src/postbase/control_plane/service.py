@@ -308,13 +308,42 @@ async def rotate_secret_ref(
     actor: User,
     secret_value: str,
 ) -> SecretRef:
+    impacted_bindings = await _list_bindings_using_secret(db, secret_ref_id=secret_ref.id)
+    if not impacted_bindings:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Secret is not linked to any binding; link before rotation to avoid blind rotation",
+        )
+
     secret_store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
+    previous_encrypted_value = secret_ref.encrypted_value
+    previous_hash = secret_ref.value_hash
+    previous_last_four = secret_ref.last_four
     secret_ref.encrypted_value = secret_store.encrypt(secret_value)
     secret_ref.value_hash = hash_secret(secret_value)
     secret_ref.last_four = secret_value[-4:] if secret_value else ""
     secret_ref.status = SecretStatus.ACTIVE
     touch_updated_at(secret_ref)
-    await db.flush()
+    try:
+        await db.flush()
+    except Exception as exc:
+        secret_ref.encrypted_value = previous_encrypted_value
+        secret_ref.value_hash = previous_hash
+        secret_ref.last_four = previous_last_four
+        touch_updated_at(secret_ref)
+        await record_audit_event(
+            db,
+            action="secret.rotation_failed",
+            entity_type="secret_ref",
+            entity_id=str(secret_ref.id),
+            actor_user_id=actor.id,
+            tenant_id=project.tenant_id,
+            project_id=project.id,
+            environment_id=environment.id,
+            payload={"name": secret_ref.name, "reason": str(exc)},
+        )
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Secret rotation failed") from exc
     await record_audit_event(
         db,
         action="secret.rotated",
@@ -500,6 +529,42 @@ async def apply_schema_migration(
     return migration
 
 
+async def rollback_schema_migration(
+    db: AsyncSession,
+    *,
+    migration: SchemaMigration,
+    environment: Environment,
+    project: Project,
+    actor: User,
+) -> SchemaMigration:
+    if migration.environment_id != environment.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    if migration.status == MigrationStatus.PENDING:
+        return migration
+
+    migration.status = MigrationStatus.PENDING
+    definition = await db.get(TableDefinition, migration.table_definition_id)
+    if definition is not None:
+        definition.status = "pending_migration"
+        touch_updated_at(definition)
+    touch_updated_at(migration)
+    await db.flush()
+    await record_audit_event(
+        db,
+        action="migration.rollback_requested",
+        entity_type="schema_migration",
+        entity_id=str(migration.id),
+        actor_user_id=actor.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"version": migration.version, "rollback_sql": f"-- rollback for migration {migration.version}"},
+    )
+    await db.commit()
+    await db.refresh(migration)
+    return migration
+
+
 def touch_updated_at(model: object) -> None:
     if hasattr(model, "updated_at"):
         setattr(model, "updated_at", datetime.now(timezone.utc))
@@ -587,14 +652,42 @@ async def execute_switchover_plan(
     if switchover.status != SwitchoverStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Switchover is not pending")
 
-    binding.provider_catalog_entry_id = switchover.target_provider_catalog_entry_id
-    binding.status = BindingStatus.ACTIVE
-    binding.readiness_detail = "switchover executed"
-    touch_updated_at(binding)
-    switchover.status = SwitchoverStatus.COMPLETED
-    switchover.execution_detail = "switchover executed successfully"
-    switchover.completed_at = datetime.now(timezone.utc)
+    previous_provider_catalog_entry_id = binding.provider_catalog_entry_id
+    switchover.status = SwitchoverStatus.RUNNING
+    switchover.execution_detail = "checkpoint:preflight_ok"
     await db.flush()
+    try:
+        binding.provider_catalog_entry_id = switchover.target_provider_catalog_entry_id
+        binding.status = BindingStatus.ACTIVE
+        binding.readiness_detail = "switchover executed"
+        touch_updated_at(binding)
+        switchover.status = SwitchoverStatus.COMPLETED
+        switchover.execution_detail = "switchover executed successfully"
+        switchover.completed_at = datetime.now(timezone.utc)
+        await db.flush()
+    except Exception as exc:
+        binding.provider_catalog_entry_id = previous_provider_catalog_entry_id
+        binding.status = BindingStatus.ACTIVE
+        binding.readiness_detail = "switchover rollback to previous provider"
+        touch_updated_at(binding)
+        switchover.status = SwitchoverStatus.FAILED
+        switchover.execution_detail = f"rollback_complete:{exc}"
+        switchover.completed_at = datetime.now(timezone.utc)
+        await db.flush()
+        await record_audit_event(
+            db,
+            action="binding.switchover_failed",
+            entity_type="switchover_plan",
+            entity_id=str(switchover.id),
+            actor_user_id=actor.id,
+            tenant_id=project.tenant_id,
+            project_id=project.id,
+            environment_id=environment.id,
+            payload={"binding_id": binding.id, "rollback_provider_catalog_entry_id": previous_provider_catalog_entry_id},
+        )
+        await db.commit()
+        await db.refresh(switchover)
+        return switchover
     await record_audit_event(
         db,
         action="binding.switchover_executed",
@@ -623,6 +716,22 @@ async def create_binding_version(
     region: str | None,
     secret_ref_ids: list[int],
 ) -> CapabilityBinding:
+    if secret_ref_ids:
+        secret_scope_rows = (
+            await db.execute(select(SecretRef).where(SecretRef.id.in_(secret_ref_ids)))
+        ).scalars().all()
+        secret_scope_by_id = {item.id: item for item in secret_scope_rows}
+        out_of_boundary = [
+            secret_id
+            for secret_id in secret_ref_ids
+            if secret_id not in secret_scope_by_id or secret_scope_by_id[secret_id].environment_id != environment.id
+        ]
+        if out_of_boundary:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tenant boundary violation: one or more secrets are outside the target environment",
+            )
+
     current_active = (
         await db.execute(
             select(CapabilityBinding).where(
@@ -698,6 +807,14 @@ async def create_binding_version(
     await db.commit()
     await db.refresh(binding)
     return binding
+
+
+async def _list_bindings_using_secret(db: AsyncSession, *, secret_ref_id: int) -> list[int]:
+    return (
+        await db.execute(
+            select(BindingSecretRef.binding_id).where(BindingSecretRef.secret_ref_id == secret_ref_id)
+        )
+    ).scalars().all()
 
 
 async def set_binding_status(

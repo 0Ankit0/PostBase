@@ -170,6 +170,13 @@ class SecretRotate(BaseModel):
     secret_value: str
 
 
+class SecretRotateResult(BaseModel):
+    secret: "SecretRefRead"
+    impacted_binding_ids: list[str]
+    post_rotation_health_check: list["ProviderHealthRead"]
+    rollback_ready: bool
+
+
 class SecretRefRead(EncodedModel):
     id: int
     environment_id: int
@@ -285,6 +292,18 @@ class MigrationRead(EncodedModel):
         if value is None:
             return None
         return encode_id(value)
+
+
+class MigrationRollbackResult(BaseModel):
+    migration: MigrationRead
+    rollback_sql: str
+    rollback_status: str
+
+
+class WebhookRecoveryResult(BaseModel):
+    scanned_failed_jobs: int
+    requeued_jobs: int
+    exhausted_job_ids: list[str]
 
 
 

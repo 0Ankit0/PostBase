@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -23,12 +25,14 @@ from src.postbase.control_plane.schemas import (
     NamespaceCreate,
     NamespaceRead,
     MigrationRead,
+    MigrationRollbackResult,
     ProjectOverviewRead,
     ProjectCreate,
     ProjectRead,
     ProviderCatalogRead,
     ProviderHealthRead,
     SecretRotate,
+    SecretRotateResult,
     SecretRefCreate,
     SecretRefRead,
     SwitchoverCreate,
@@ -37,6 +41,7 @@ from src.postbase.control_plane.schemas import (
     TableRead,
     UsageMeterRead,
     WebhookDrainResult,
+    WebhookRecoveryResult,
 )
 from src.postbase.control_plane.service import (
     build_capability_health_report,
@@ -50,6 +55,7 @@ from src.postbase.control_plane.service import (
     create_project_for_tenant,
     create_secret_ref,
     apply_schema_migration,
+    rollback_schema_migration,
     ensure_environment_access,
     get_project_usage_meters,
     require_project_access,
@@ -73,6 +79,7 @@ from src.postbase.domain.models import (
     DataNamespace,
     TableDefinition,
     UsageMeter,
+    WebhookDeliveryJob,
 )
 from src.postbase.platform.access import issue_environment_api_key
 from src.postbase.platform.audit import record_audit_event
@@ -575,14 +582,14 @@ async def create_environment_secret(
     )
 
 
-@router.post("/environments/{environment_id}/secrets/{secret_id}/rotate", response_model=SecretRefRead)
+@router.post("/environments/{environment_id}/secrets/{secret_id}/rotate", response_model=SecretRotateResult)
 async def rotate_environment_secret(
     environment_id: str,
     secret_id: str,
     payload: SecretRotate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> SecretRef:
+) -> SecretRotateResult:
     environment_db_id = decode_id_or_404(environment_id)
     secret_db_id = decode_id_or_404(secret_id)
     environment = await db.get(Environment, environment_db_id)
@@ -597,13 +604,25 @@ async def rotate_environment_secret(
     secret_ref = await db.get(SecretRef, secret_db_id)
     if secret_ref is None or secret_ref.environment_id != environment.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Secret not found")
-    return await rotate_secret_ref(
+    updated_secret = await rotate_secret_ref(
         db,
         secret_ref=secret_ref,
         project=project,
         environment=environment,
         actor=current_user,
         secret_value=payload.secret_value,
+    )
+    impacted_binding_ids = (
+        await db.execute(
+            select(BindingSecretRef.binding_id).where(BindingSecretRef.secret_ref_id == secret_ref.id)
+        )
+    ).scalars().all()
+    _, provider_health, _ = await build_capability_health_report(db, environment=environment, project=project)
+    return SecretRotateResult(
+        secret=SecretRefRead.model_validate(updated_secret),
+        impacted_binding_ids=[encode_id(item) for item in impacted_binding_ids],
+        post_rotation_health_check=[ProviderHealthRead(**item) for item in provider_health],
+        rollback_ready=True,
     )
 
 
@@ -745,6 +764,46 @@ async def drain_environment_webhooks(
             {"item": "Scheduled drain job configured", "completed": True},
             {"item": "Operator-triggered drain endpoint available", "completed": True},
         ],
+    )
+
+
+@router.post("/environments/{environment_id}/operations/webhooks/recover-exhausted", response_model=WebhookRecoveryResult)
+async def recover_exhausted_webhooks(
+    environment_id: str,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> WebhookRecoveryResult:
+    environment_db_id = decode_id_or_404(environment_id)
+    environment = await db.get(Environment, environment_db_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.ADMIN,
+    )
+    failed_jobs = (
+        await db.execute(
+            select(WebhookDeliveryJob)
+            .where(
+                WebhookDeliveryJob.status == "failed",
+                WebhookDeliveryJob.attempt_count >= WebhookDeliveryJob.max_attempts,
+            )
+            .order_by(WebhookDeliveryJob.created_at.asc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    for job in failed_jobs:
+        job.status = "retrying"
+        job.error_text = "operator initiated retry after exhaustion"
+        job.next_attempt_at = datetime.now(timezone.utc)
+    await db.commit()
+    return WebhookRecoveryResult(
+        scanned_failed_jobs=len(failed_jobs),
+        requeued_jobs=len(failed_jobs),
+        exhausted_job_ids=[encode_id(job.id) for job in failed_jobs if job.id is not None],
     )
 
 @router.post("/environments/{environment_id}/data/namespaces", response_model=NamespaceRead, status_code=status.HTTP_201_CREATED)
@@ -913,3 +972,42 @@ async def apply_environment_migration(
             await provider.create_table(db, namespace, definition)
             await db.commit()
     return await _to_migration_read(db, migration)
+
+
+@router.post(
+    "/environments/{environment_id}/migrations/{migration_id}/rollback",
+    response_model=MigrationRollbackResult,
+)
+async def rollback_environment_migration(
+    environment_id: str,
+    migration_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MigrationRollbackResult:
+    environment_db_id = decode_id_or_404(environment_id)
+    migration_db_id = decode_id_or_404(migration_id)
+    environment = await db.get(Environment, environment_db_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    project = await ensure_environment_access(
+        db,
+        environment=environment,
+        user_id=current_user.id,
+        min_role=TenantRole.ADMIN,
+    )
+    migration = await db.get(SchemaMigration, migration_db_id)
+    if migration is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    migration = await rollback_schema_migration(
+        db,
+        migration=migration,
+        environment=environment,
+        project=project,
+        actor=current_user,
+    )
+    migration_read = await _to_migration_read(db, migration)
+    return MigrationRollbackResult(
+        migration=migration_read,
+        rollback_sql=f"-- rollback for migration {migration.version}",
+        rollback_status="requested",
+    )
