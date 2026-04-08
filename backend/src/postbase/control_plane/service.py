@@ -62,6 +62,14 @@ REQUIRED_OPERATIONS: dict[CapabilityKey, set[str]] = {
 }
 
 
+def _forbidden_role_payload(*, required_role: TenantRole) -> dict[str, str]:
+    return {
+        "code": "control_plane_forbidden",
+        "message": "insufficient_role",
+        "required_role": required_role.value,
+    }
+
+
 async def require_tenant_role(
     db: AsyncSession,
     *,
@@ -79,7 +87,10 @@ async def require_tenant_role(
         )
     ).scalars().first()
     if membership is None or ROLE_ORDER[membership.role] < ROLE_ORDER[min_role]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient tenant access")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_forbidden_role_payload(required_role=min_role),
+        )
     return membership
 
 
