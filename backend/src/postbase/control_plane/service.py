@@ -33,6 +33,7 @@ from src.postbase.domain.models import (
     Project,
     ProviderCatalogEntry,
     SchemaMigration,
+    SchemaMigrationExecution,
     SecretRef,
     SwitchoverPlan,
     TableDefinition,
@@ -51,6 +52,7 @@ from src.postbase.platform.seeding import seed_provider_catalog
 from src.postbase.platform.security import hash_secret
 from src.postbase.platform.secret_store import DbEncryptedSecretStore
 from src.apps.core.config import settings
+from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
 
 
 ROLE_ORDER = {TenantRole.MEMBER: 0, TenantRole.ADMIN: 1, TenantRole.OWNER: 2}
@@ -567,9 +569,9 @@ async def create_table_metadata(
     migration_status = (
         MigrationStatus.APPLIED
         if environment.stage == EnvironmentStage.DEVELOPMENT
-        else MigrationStatus.PENDING
+        else MigrationStatus.QUEUED
     )
-    if migration_status == MigrationStatus.PENDING:
+    if migration_status in {MigrationStatus.QUEUED, MigrationStatus.PENDING}:
         provider_entry.status = "pending_migration"
     db.add(
         SchemaMigration(
@@ -609,17 +611,113 @@ async def apply_schema_migration(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
     if migration.status == MigrationStatus.APPLIED:
         return migration
+    if migration.status == MigrationStatus.CANCELED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canceled migration cannot be applied")
 
-    migration.status = MigrationStatus.APPLIED
+    execution = await _start_migration_execution(db, migration=migration, environment=environment)
+    definition = await db.get(TableDefinition, migration.table_definition_id)
+    namespace = await db.get(DataNamespace, migration.namespace_id)
+    provider = PostgresNativeDataProvider()
+    try:
+        migration.status = MigrationStatus.PENDING
+        touch_updated_at(migration)
+        await db.flush()
+
+        if definition is not None and namespace is not None:
+            await provider.create_namespace(db, namespace)
+            await provider.create_table(db, namespace, definition)
+            definition.status = "active"
+            touch_updated_at(definition)
+
+        migration.status = MigrationStatus.APPLIED
+        touch_updated_at(migration)
+        await _finish_migration_execution(db, execution=execution, status=MigrationStatus.APPLIED)
+        await record_audit_event(
+            db,
+            action="migration.applied",
+            entity_type="schema_migration",
+            entity_id=str(migration.id),
+            actor_user_id=actor.id,
+            tenant_id=project.tenant_id,
+            project_id=project.id,
+            environment_id=environment.id,
+            payload={"version": migration.version},
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        migration = await db.get(SchemaMigration, migration.id)
+        if migration is None:
+            raise
+        migration.status = MigrationStatus.FAILED
+        touch_updated_at(migration)
+        definition = await db.get(TableDefinition, migration.table_definition_id)
+        if definition is not None:
+            definition.status = "pending_migration"
+            touch_updated_at(definition)
+        execution = await db.get(SchemaMigrationExecution, execution.id)
+        if execution is None:
+            execution = await _start_migration_execution(db, migration=migration, environment=environment)
+        await _finish_migration_execution(db, execution=execution, status=MigrationStatus.FAILED, error_text=str(exc))
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Migration apply failed: {exc}") from exc
+
+    await db.refresh(migration)
+    return migration
+
+
+async def retry_schema_migration(
+    db: AsyncSession,
+    *,
+    migration: SchemaMigration,
+    environment: Environment,
+    project: Project,
+    actor: User,
+) -> SchemaMigration:
+    if migration.environment_id != environment.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    if migration.status != MigrationStatus.FAILED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only failed migrations can be retried")
+
+    migration.status = MigrationStatus.PENDING
+    touch_updated_at(migration)
+    await db.flush()
+    await db.commit()
+    await db.refresh(migration)
+    return await apply_schema_migration(
+        db,
+        migration=migration,
+        environment=environment,
+        project=project,
+        actor=actor,
+    )
+
+
+async def cancel_schema_migration(
+    db: AsyncSession,
+    *,
+    migration: SchemaMigration,
+    environment: Environment,
+    project: Project,
+    actor: User,
+) -> SchemaMigration:
+    if migration.environment_id != environment.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    if migration.status == MigrationStatus.APPLIED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Applied migration cannot be canceled")
+    if migration.status == MigrationStatus.CANCELED:
+        return migration
+
+    migration.status = MigrationStatus.CANCELED
     definition = await db.get(TableDefinition, migration.table_definition_id)
     if definition is not None:
-        definition.status = "active"
+        definition.status = "canceled_migration"
         touch_updated_at(definition)
     touch_updated_at(migration)
     await db.flush()
     await record_audit_event(
         db,
-        action="migration.applied",
+        action="migration.canceled",
         entity_type="schema_migration",
         entity_id=str(migration.id),
         actor_user_id=actor.id,
@@ -633,40 +731,33 @@ async def apply_schema_migration(
     return migration
 
 
-async def rollback_schema_migration(
+async def _start_migration_execution(
     db: AsyncSession,
     *,
     migration: SchemaMigration,
     environment: Environment,
-    project: Project,
-    actor: User,
-) -> SchemaMigration:
-    if migration.environment_id != environment.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
-    if migration.status == MigrationStatus.PENDING:
-        return migration
-
-    migration.status = MigrationStatus.PENDING
-    definition = await db.get(TableDefinition, migration.table_definition_id)
-    if definition is not None:
-        definition.status = "pending_migration"
-        touch_updated_at(definition)
-    touch_updated_at(migration)
-    await db.flush()
-    await record_audit_event(
-        db,
-        action="migration.rollback_requested",
-        entity_type="schema_migration",
-        entity_id=str(migration.id),
-        actor_user_id=actor.id,
-        tenant_id=project.tenant_id,
-        project_id=project.id,
+) -> SchemaMigrationExecution:
+    execution = SchemaMigrationExecution(
+        migration_id=migration.id,
         environment_id=environment.id,
-        payload={"version": migration.version, "rollback_sql": f"-- rollback for migration {migration.version}"},
+        status=MigrationStatus.PENDING,
     )
-    await db.commit()
-    await db.refresh(migration)
-    return migration
+    db.add(execution)
+    await db.flush()
+    return execution
+
+
+async def _finish_migration_execution(
+    db: AsyncSession,
+    *,
+    execution: SchemaMigrationExecution,
+    status: MigrationStatus,
+    error_text: str = "",
+) -> None:
+    execution.status = status
+    execution.error_text = error_text
+    execution.finished_at = datetime.now(timezone.utc)
+    await db.flush()
 
 
 def touch_updated_at(model: object) -> None:
@@ -1177,7 +1268,7 @@ async def build_project_overview(
         pending_migrations = sum(
             1
             for item in migrations
-            if item.environment_id == environment.id and item.status == MigrationStatus.PENDING
+            if item.environment_id == environment.id and item.status in {MigrationStatus.QUEUED, MigrationStatus.PENDING}
         )
         environment_health = health_by_environment[environment.id]
         environment_rows.append(

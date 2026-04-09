@@ -6,8 +6,8 @@ from sqlmodel import select
 from src.apps.iam.models.user import User
 from src.apps.multitenancy.models.tenant import Tenant, TenantMember, TenantRole
 from src.apps.iam.utils.hashid import encode_id
-from src.postbase.domain.enums import BindingStatus
-from src.postbase.domain.models import CapabilityBinding
+from src.postbase.domain.enums import BindingStatus, MigrationStatus
+from src.postbase.domain.models import CapabilityBinding, SchemaMigration, SchemaMigrationExecution
 
 
 @pytest.mark.asyncio
@@ -364,11 +364,11 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
     )
     assert migrations_response.status_code == 200, migrations_response.text
     rollback_response = await client.post(
-        f"/api/v1/environments/{environment_id}/migrations/{migrations_response.json()[0]['id']}/rollback",
+        f"/api/v1/environments/{environment_id}/migrations/{migrations_response.json()[0]['id']}/cancel",
         headers=owner_headers,
     )
     assert rollback_response.status_code == 200, rollback_response.text
-    assert rollback_response.json()["rollback_status"] == "requested"
+    assert rollback_response.json()["rollback_status"] == "canceled"
 
     bindings_response = await client.get(
         f"/api/v1/environments/{environment_id}/bindings",
@@ -649,6 +649,163 @@ async def test_postbase_provider_switchovers_to_alternate_adapters(client, db_se
     assert "websocket-gateway" in health_entries
 
 
+async def _setup_migration_context(client, db_session, *, email: str, username: str, tenant_slug: str, project_slug: str):
+    signup_response = await client.post(
+        "/api/v1/auth/signup/?set_cookie=false",
+        json={
+            "username": username,
+            "email": email,
+            "password": "OwnerPass123!",
+            "confirm_password": "OwnerPass123!",
+        },
+    )
+    assert signup_response.status_code == 200, signup_response.text
+    owner_headers = {"Authorization": f"Bearer {signup_response.json()['access']}"}
+    owner = (await db_session.execute(select(User).where(User.email == email))).scalars().first()
+    assert owner is not None
+
+    tenant = Tenant(name=f"{username}-tenant", slug=tenant_slug, description="migration tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+
+    project_response = await client.post(
+        "/api/v1/projects",
+        headers=owner_headers,
+        json={
+            "tenant_id": encode_id(tenant.id),
+            "name": "Migration project",
+            "slug": project_slug,
+            "description": "Migration checks",
+        },
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["id"]
+    environment_response = await client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        headers=owner_headers,
+        json={"name": "Staging", "slug": f"{project_slug}-env", "stage": "staging"},
+    )
+    assert environment_response.status_code == 201, environment_response.text
+    environment_id = environment_response.json()["id"]
+    namespace_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces",
+        headers=owner_headers,
+        json={"name": "mig"},
+    )
+    assert namespace_response.status_code == 201, namespace_response.text
+    namespace_id = namespace_response.json()["id"]
+    table_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces/{namespace_id}/tables",
+        headers=owner_headers,
+        json={"table_name": "deployments", "columns": [{"name": "name", "type": "text", "nullable": False}]},
+    )
+    assert table_response.status_code == 201, table_response.text
+    migrations_response = await client.get(f"/api/v1/environments/{environment_id}/migrations", headers=owner_headers)
+    assert migrations_response.status_code == 200, migrations_response.text
+    return owner_headers, environment_id, migrations_response.json()[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_migration_apply_success_records_execution(client, db_session):
+    owner_headers, environment_id, migration_id = await _setup_migration_context(
+        client,
+        db_session,
+        email="mig-success@example.com",
+        username="mig_success",
+        tenant_slug="mig-success-tenant",
+        project_slug="mig-success-project",
+    )
+    apply_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply",
+        headers=owner_headers,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+    assert apply_response.json()["status"] == "applied"
+
+    migration = (await db_session.execute(select(SchemaMigration))).scalars().first()
+    execution = (await db_session.execute(select(SchemaMigrationExecution))).scalars().first()
+    assert migration is not None
+    assert migration.status == MigrationStatus.APPLIED
+    assert execution is not None
+    assert execution.status == MigrationStatus.APPLIED
+    assert execution.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_migration_apply_partial_failure_rolls_back_and_records_error(client, db_session, monkeypatch):
+    owner_headers, environment_id, migration_id = await _setup_migration_context(
+        client,
+        db_session,
+        email="mig-fail@example.com",
+        username="mig_fail",
+        tenant_slug="mig-fail-tenant",
+        project_slug="mig-fail-project",
+    )
+    from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
+
+    original_create_table = PostgresNativeDataProvider.create_table
+
+    async def failing_create_table(self, db, namespace_row, definition):
+        await original_create_table(self, db, namespace_row, definition)
+        raise RuntimeError("synthetic migration failure")
+
+    monkeypatch.setattr(PostgresNativeDataProvider, "create_table", failing_create_table)
+    apply_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply",
+        headers=owner_headers,
+    )
+    assert apply_response.status_code == 500, apply_response.text
+    assert "Migration apply failed" in apply_response.json()["detail"]
+
+    migration = (await db_session.execute(select(SchemaMigration))).scalars().first()
+    execution = (await db_session.execute(select(SchemaMigrationExecution))).scalars().first()
+    assert migration is not None
+    assert migration.status == MigrationStatus.FAILED
+    assert execution is not None
+    assert execution.status == MigrationStatus.FAILED
+    assert "synthetic migration failure" in execution.error_text
+
+
+@pytest.mark.asyncio
+async def test_migration_retry_flow_succeeds_after_failure(client, db_session, monkeypatch):
+    owner_headers, environment_id, migration_id = await _setup_migration_context(
+        client,
+        db_session,
+        email="mig-retry@example.com",
+        username="mig_retry",
+        tenant_slug="mig-retry-tenant",
+        project_slug="mig-retry-project",
+    )
+    from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
+
+    async def always_fail_create_table(self, db, namespace_row, definition):
+        raise RuntimeError("retryable synthetic failure")
+
+    monkeypatch.setattr(PostgresNativeDataProvider, "create_table", always_fail_create_table)
+    first_apply = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply",
+        headers=owner_headers,
+    )
+    assert first_apply.status_code == 500, first_apply.text
+
+    monkeypatch.undo()
+    retry_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/retry",
+        headers=owner_headers,
+    )
+    assert retry_response.status_code == 200, retry_response.text
+    assert retry_response.json()["migration"]["status"] == "applied"
+
+    executions = (
+        await db_session.execute(select(SchemaMigrationExecution).order_by(SchemaMigrationExecution.id.asc()))
+    ).scalars().all()
+    assert len(executions) == 2
+    assert executions[0].status == MigrationStatus.FAILED
+    assert executions[1].status == MigrationStatus.APPLIED
+
+
 @pytest.mark.asyncio
 async def test_control_plane_role_authorization_matrix_for_mutations(client, db_session):
     async def _signup(email: str, username: str) -> tuple[dict[str, str], User]:
@@ -756,7 +913,8 @@ async def test_control_plane_role_authorization_matrix_for_mutations(client, db_
         ("secrets_rotate", "post", f"/api/v1/environments/{environment_id}/secrets/{seed_secret_id}/rotate", {"secret_value": "matrix-updated-value"}),
         ("secrets_revoke", "delete", f"/api/v1/environments/{environment_id}/secrets/{seed_secret_id}", None),
         ("migrations", "post", f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply", None),
-        ("migrations_rollback", "post", f"/api/v1/environments/{environment_id}/migrations/{migration_id}/rollback", None),
+        ("migrations_retry", "post", f"/api/v1/environments/{environment_id}/migrations/{migration_id}/retry", None),
+        ("migrations_cancel", "post", f"/api/v1/environments/{environment_id}/migrations/{migration_id}/cancel", None),
         ("switchovers", "post", f"/api/v1/bindings/{storage_binding['id']}/switchovers", {"target_provider_key": "local-disk", "strategy": "cutover"}),
         ("webhook_drain", "post", f"/api/v1/environments/{environment_id}/operations/webhooks/drain", None),
         ("webhook_recover", "post", f"/api/v1/environments/{environment_id}/operations/webhooks/recover-exhausted", None),

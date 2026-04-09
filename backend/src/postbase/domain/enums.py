@@ -62,9 +62,11 @@ class PolicyMode(str, Enum):
 
 
 class MigrationStatus(str, Enum):
+    QUEUED = "queued"
     PENDING = "pending"
     APPLIED = "applied"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class SwitchoverStatus(str, Enum):

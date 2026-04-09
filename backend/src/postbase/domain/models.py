@@ -323,9 +323,21 @@ class SchemaMigration(SQLModel, table=True):
         index=True,
     )
     version: str = Field(max_length=40)
-    status: MigrationStatus = Field(default=MigrationStatus.APPLIED)
+    status: MigrationStatus = Field(default=MigrationStatus.APPLIED, index=True)
     applied_sql: str = Field(default="")
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class SchemaMigrationExecution(SQLModel, table=True):
+    __tablename__ = "postbase_schema_migration_execution"
+
+    id: int | None = Field(default=None, primary_key=True)
+    migration_id: int = Field(foreign_key="postbase_schema_migration.id", index=True)
+    environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
+    status: MigrationStatus = Field(default=MigrationStatus.PENDING, index=True)
+    error_text: str = Field(default="")
+    started_at: datetime = Field(default_factory=utcnow)
+    finished_at: datetime | None = Field(default=None)
 
 
 class FileObject(SQLModel, table=True):
