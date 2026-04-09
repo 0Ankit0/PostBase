@@ -55,7 +55,8 @@ from src.postbase.control_plane.service import (
     create_project_for_tenant,
     create_secret_ref,
     apply_schema_migration,
-    rollback_schema_migration,
+    retry_schema_migration,
+    cancel_schema_migration,
     ensure_environment_access,
     get_project_usage_meters,
     require_project_access,
@@ -927,8 +928,10 @@ async def _to_migration_read(db: AsyncSession, migration: SchemaMigration) -> Mi
     reconciliation_status = "pending_apply"
     if migration.status == MigrationStatus.APPLIED:
         reconciliation_status = "in_sync"
-    if migration.status == MigrationStatus.FAILED:
+    elif migration.status == MigrationStatus.FAILED:
         reconciliation_status = "drifted"
+    elif migration.status == MigrationStatus.CANCELED:
+        reconciliation_status = "canceled"
     if migration.table_definition_id is not None:
         definition = await db.get(TableDefinition, migration.table_definition_id)
         if definition is None:
@@ -999,22 +1002,14 @@ async def apply_environment_migration(
         project=project,
         actor=current_user,
     )
-    if migration.table_definition_id:
-        definition = await db.get(TableDefinition, migration.table_definition_id)
-        namespace = await db.get(DataNamespace, migration.namespace_id)
-        if definition is not None and namespace is not None:
-            provider = PostgresNativeDataProvider()
-            await provider.create_namespace(db, namespace)
-            await provider.create_table(db, namespace, definition)
-            await db.commit()
     return await _to_migration_read(db, migration)
 
 
 @router.post(
-    "/environments/{environment_id}/migrations/{migration_id}/rollback",
+    "/environments/{environment_id}/migrations/{migration_id}/retry",
     response_model=MigrationRollbackResult,
 )
-async def rollback_environment_migration(
+async def retry_environment_migration(
     environment_id: str,
     migration_id: str,
     db: AsyncSession = Depends(get_db),
@@ -1031,7 +1026,7 @@ async def rollback_environment_migration(
     migration = await db.get(SchemaMigration, migration_db_id)
     if migration is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
-    migration = await rollback_schema_migration(
+    migration = await retry_schema_migration(
         db,
         migration=migration,
         environment=environment,
@@ -1041,6 +1036,42 @@ async def rollback_environment_migration(
     migration_read = await _to_migration_read(db, migration)
     return MigrationRollbackResult(
         migration=migration_read,
-        rollback_sql=f"-- rollback for migration {migration.version}",
+        rollback_sql=f"-- retry for migration {migration.version}",
         rollback_status="requested",
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/migrations/{migration_id}/cancel",
+    response_model=MigrationRollbackResult,
+)
+async def cancel_environment_migration(
+    environment_id: str,
+    migration_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MigrationRollbackResult:
+    environment = await _load_environment_or_404(db, environment_id)
+    migration_db_id = decode_id_or_404(migration_id)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="migrations",
+    )
+    migration = await db.get(SchemaMigration, migration_db_id)
+    if migration is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    migration = await cancel_schema_migration(
+        db,
+        migration=migration,
+        environment=environment,
+        project=project,
+        actor=current_user,
+    )
+    migration_read = await _to_migration_read(db, migration)
+    return MigrationRollbackResult(
+        migration=migration_read,
+        rollback_sql="-- canceled migration",
+        rollback_status="canceled",
     )
