@@ -1,5 +1,13 @@
 # Managed by Probot Settings app (or compatible GitHub settings sync tooling).
 # Ensures release gating checks are required before merges/releases.
+labels:
+  - name: triage:flaky-infrastructure
+    color: D93F0B
+    description: CI failure appears flaky or caused by infrastructure/environment instability.
+  - name: triage:code-regression
+    color: B60205
+    description: CI failure points to a product code regression that needs a fix.
+
 branches:
   - name: main
     protection:
@@ -8,6 +16,14 @@ branches:
         contexts:
           - docs
           - deploy-readiness
+          - backend-lint
+          - backend-tests
+          - backend-integration
+          - frontend-lint
+          - frontend-typecheck
+          - frontend-tests
+          - mobile-lint
+          - mobile-tests
       enforce_admins: true
       required_pull_request_reviews:
         dismiss_stale_reviews: true
@@ -21,6 +37,14 @@ branches:
         contexts:
           - docs
           - deploy-readiness
+          - backend-lint
+          - backend-tests
+          - backend-integration
+          - frontend-lint
+          - frontend-typecheck
+          - frontend-tests
+          - mobile-lint
+          - mobile-tests
       enforce_admins: true
       required_pull_request_reviews:
         dismiss_stale_reviews: true
@@ -34,6 +58,14 @@ branches:
         contexts:
           - docs
           - deploy-readiness
+          - backend-lint
+          - backend-tests
+          - backend-integration
+          - frontend-lint
+          - frontend-typecheck
+          - frontend-tests
+          - mobile-lint
+          - mobile-tests
       enforce_admins: true
       required_pull_request_reviews:
         dismiss_stale_reviews: true
