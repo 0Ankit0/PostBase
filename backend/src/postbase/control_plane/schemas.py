@@ -33,6 +33,10 @@ class ProjectCreate(BaseModel):
     description: str = ""
 
 
+class ProjectLifecycleUpdate(BaseModel):
+    is_active: bool
+
+
 class ProjectRead(EncodedModel):
     id: int
     tenant_id: int
@@ -53,6 +57,12 @@ class EnvironmentCreate(BaseModel):
     slug: str
     stage: EnvironmentStage = EnvironmentStage.DEVELOPMENT
     region_preference: str | None = None
+
+
+class EnvironmentLifecycleUpdate(BaseModel):
+    status: EnvironmentStatus | None = None
+    is_active: bool | None = None
+    reason: str | None = None
 
 
 class EnvironmentRead(EncodedModel):
