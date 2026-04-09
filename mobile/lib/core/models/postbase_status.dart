@@ -153,10 +153,30 @@ class PostBaseProjectStatus {
   final PostBaseProjectRead project;
   final PostBaseProjectOverview overview;
   final PostBaseCapabilityHealthReport? primaryEnvironmentHealth;
+  final bool hasDegradedBackendState;
+  final String? degradedReason;
 
   const PostBaseProjectStatus({
     required this.project,
     required this.overview,
     required this.primaryEnvironmentHealth,
+    this.hasDegradedBackendState = false,
+    this.degradedReason,
+  });
+}
+
+class PostBasePlatformSnapshot {
+  final List<PostBaseProjectStatus> statuses;
+  final bool isFromCache;
+  final bool isStale;
+  final DateTime fetchedAt;
+  final String? warning;
+
+  const PostBasePlatformSnapshot({
+    required this.statuses,
+    required this.isFromCache,
+    required this.isStale,
+    required this.fetchedAt,
+    this.warning,
   });
 }

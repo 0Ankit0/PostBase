@@ -35,6 +35,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       if (!isAuthenticated && !onAuthPage) {
         return AppConstants.loginRoute;
       }
+      const mobileMutationBlockedPrefixes = [
+        '/admin/postbase',
+        '/switchovers',
+        '/migrations',
+        '/bindings',
+        '/secrets',
+      ];
+      if (mobileMutationBlockedPrefixes
+          .any((prefix) => location.startsWith(prefix))) {
+        return AppConstants.settingsRoute;
+      }
       if (isAuthenticated && (location == AppConstants.loginRoute ||
           location == AppConstants.registerRoute)) {
         return AppConstants.homeRoute;

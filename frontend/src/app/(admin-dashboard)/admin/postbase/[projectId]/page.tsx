@@ -300,6 +300,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           <CardTitle>Schema migrations</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
+          <OperationGuardNotice operation="migration_apply" />
           {pendingMigrations.length === 0 && failedMigrations.length === 0 ? (
             <p className="text-gray-500">No pending/failed migrations.</p>
           ) : (
@@ -314,13 +315,34 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                 {migration.reconcile_error_text && <p className="text-xs text-red-600">reconcile error: {migration.reconcile_error_text}</p>}
                 <div className="flex gap-2">
                   {migration.status === 'pending' && (
-                    <Button size="sm" onClick={() => applyMigration.mutate(migration.id)} disabled={applyMigration.isPending}>
-                      Apply
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        runAction(`migration-apply-${migration.id}`, async () => {
+                          const result = await applyMigration.mutateAsync(migration.id);
+                          setLatestOperationSummary(`Migration ${result.version} apply request accepted (${result.status}).`);
+                        })
+                      }
+                      disabled={applyMigration.isPending || runningActions[`migration-apply-${migration.id}`]}
+                    >
+                      {runningActions[`migration-apply-${migration.id}`] ? 'Applying…' : 'Apply'}
                     </Button>
                   )}
                   {migration.status === 'failed' && (
-                    <Button size="sm" variant="outline" onClick={() => retryMigration.mutate(migration.id)} disabled={retryMigration.isPending}>
-                      Retry
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        runAction(`migration-retry-${migration.id}`, async () => {
+                          const result = await retryMigration.mutateAsync(migration.id);
+                          setLatestOperationSummary(
+                            `Migration ${result.migration.version} retry requested; rollback status: ${result.rollback_status}.`,
+                          );
+                        })
+                      }
+                      disabled={retryMigration.isPending || runningActions[`migration-retry-${migration.id}`]}
+                    >
+                      {runningActions[`migration-retry-${migration.id}`] ? 'Retrying…' : 'Retry'}
                     </Button>
                   )}
                   {migration.reconciliation_status !== 'in_sync' && (
@@ -350,8 +372,8 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
               Retry requested for {retryMigration.data.migration.version}; rollback status: {retryMigration.data.rollback_status}.
             </p>
           )}
-          <MutationError mutationError={applyMigration.error} />
-          <MutationError mutationError={retryMigration.error} />
+          <MutationError mutationError={applyMigration.error} operation="migration_apply" />
+          <MutationError mutationError={retryMigration.error} operation="migration_retry" />
           <MutationError mutationError={reconcileMigration.error} />
         </CardContent>
       </Card>
@@ -508,6 +530,38 @@ interface OperationStatusSummaryProps {
   lastPolledAt: string | null;
 }
 
+type HighRiskOperation =
+  | 'binding_create'
+  | 'binding_transition'
+  | 'secret_create'
+  | 'secret_rotate'
+  | 'secret_deactivate'
+  | 'migration_apply'
+  | 'migration_retry'
+  | 'switchover_plan'
+  | 'switchover_execute';
+
+const HIGH_RISK_PREFLIGHT_COPY: Record<HighRiskOperation, string> = {
+  binding_create:
+    'Preflight: verify capability/provider pairing, region policy, and linked secret IDs before creating a binding.',
+  binding_transition:
+    'Preflight: confirm dependent workloads can tolerate this binding state transition and provide an audit reason.',
+  secret_create:
+    'Preflight: confirm provider identity and scope; incorrect secrets can hard-fail traffic.',
+  secret_rotate:
+    'Preflight: ensure downstream adapters accept the new credential before rotating.',
+  secret_deactivate:
+    'Preflight: make sure no active binding still references this secret.',
+  migration_apply:
+    'Preflight: run drift checks and verify no long-running writes are in-flight before applying migration SQL.',
+  migration_retry:
+    'Preflight: inspect failure and rollback status, then retry only after remediating the root cause.',
+  switchover_plan:
+    'Preflight: validate target provider readiness and retirement strategy before planning switchover.',
+  switchover_execute:
+    'Preflight: execute only when all preflight checks are green; blocked checks require remediation first.',
+};
+
 export function OperationStatusSummary({
   latestOperationSummary,
   drainError,
@@ -535,6 +589,7 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
   const [secretKind, setSecretKind] = useState('');
   const [secretValue, setSecretValue] = useState('');
   const [rotateInputBySecret, setRotateInputBySecret] = useState<Record<string, string>>({});
+  const [pendingBySecret, setPendingBySecret] = useState<Record<string, boolean>>({});
 
   const onSubmit = () => {
     if (!name || !providerKey || !secretKind || !secretValue) {
@@ -557,6 +612,7 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
         <CardTitle>Secret lifecycle (create / rotate / deactivate)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
+        <OperationGuardNotice operation="secret_create" />
         <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Secret name" />
         <Input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Provider key" />
         <Input value={secretKind} onChange={(event) => setSecretKind(event.target.value)} placeholder="Secret kind" />
@@ -578,7 +634,18 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
                       {secret.provider_key} · {secret.status} · ****{secret.last_four}
                     </p>
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => deactivateSecret.mutate(secret.id)} disabled={deactivateSecret.isPending || secret.status === 'revoked'}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (pendingBySecret[secret.id]) return;
+                      setPendingBySecret((current) => ({ ...current, [secret.id]: true }));
+                      deactivateSecret.mutate(secret.id, {
+                        onSettled: () => setPendingBySecret((current) => ({ ...current, [secret.id]: false })),
+                      });
+                    }}
+                    disabled={deactivateSecret.isPending || pendingBySecret[secret.id] || secret.status === 'revoked'}
+                  >
                     Deactivate
                   </Button>
                 </div>
@@ -594,16 +661,21 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
                     onClick={() => {
                       const nextValue = rotateInputBySecret[secret.id]?.trim();
                       if (!nextValue) return;
+                      if (pendingBySecret[secret.id]) return;
+                      setPendingBySecret((current) => ({ ...current, [secret.id]: true }));
                       rotateSecret.mutate(
                         { secretId: secret.id, secretValue: nextValue },
                         {
                           onSuccess: () => {
                             setRotateInputBySecret((current) => ({ ...current, [secret.id]: '' }));
                           },
+                          onSettled: () => {
+                            setPendingBySecret((current) => ({ ...current, [secret.id]: false }));
+                          },
                         },
                       );
                     }}
-                    disabled={rotateSecret.isPending}
+                    disabled={rotateSecret.isPending || pendingBySecret[secret.id]}
                   >
                     Rotate
                   </Button>
@@ -612,9 +684,9 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
             ))
           )}
         </div>
-        <MutationError mutationError={createSecret.error} />
-        <MutationError mutationError={rotateSecret.error} />
-        <MutationError mutationError={deactivateSecret.error} />
+        <MutationError mutationError={createSecret.error} operation="secret_create" />
+        <MutationError mutationError={rotateSecret.error} operation="secret_rotate" />
+        <MutationError mutationError={deactivateSecret.error} operation="secret_deactivate" />
       </CardContent>
     </Card>
   );
@@ -639,6 +711,7 @@ function BindingForm({
   const [secretIds, setSecretIds] = useState('');
   const [configJson, setConfigJson] = useState('{}');
   const [reasonByBinding, setReasonByBinding] = useState<Record<string, string>>({});
+  const [transitionPendingByBinding, setTransitionPendingByBinding] = useState<Record<string, boolean>>({});
 
   const onSubmit = () => {
     if (!capabilityKey || !providerKey) {
@@ -664,13 +737,22 @@ function BindingForm({
   };
 
   const transitionBinding = (bindingId: string, status: 'active' | 'disabled' | 'retired') => {
-    updateBindingStatus.mutate({
-      bindingId,
-      payload: {
-        status,
-        reason: reasonByBinding[bindingId] || `manual_${status}`,
+    if (updateBindingStatus.isPending || transitionPendingByBinding[bindingId]) return;
+    setTransitionPendingByBinding((current) => ({ ...current, [bindingId]: true }));
+    updateBindingStatus.mutate(
+      {
+        bindingId,
+        payload: {
+          status,
+          reason: reasonByBinding[bindingId] || `manual_${status}`,
+        },
       },
-    });
+      {
+        onSettled: () => {
+          setTransitionPendingByBinding((current) => ({ ...current, [bindingId]: false }));
+        },
+      },
+    );
   };
 
   return (
@@ -679,6 +761,7 @@ function BindingForm({
         <CardTitle>Binding lifecycle (create / update / disable / retire)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs text-gray-500">
+        <OperationGuardNotice operation="binding_create" />
         <Input value={capabilityKey} onChange={(event) => setCapabilityKey(event.target.value)} placeholder="Capability key" />
         <Input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Provider key" />
         <Input value={region} onChange={(event) => setRegion(event.target.value)} placeholder="Region (optional)" />
@@ -703,13 +786,28 @@ function BindingForm({
                 placeholder="Transition reason"
               />
               <div className="mt-2 flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => transitionBinding(binding.id, 'active')} disabled={updateBindingStatus.isPending}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => transitionBinding(binding.id, 'active')}
+                  disabled={updateBindingStatus.isPending || transitionPendingByBinding[binding.id]}
+                >
                   Update/Enable
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => transitionBinding(binding.id, 'disabled')} disabled={updateBindingStatus.isPending}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => transitionBinding(binding.id, 'disabled')}
+                  disabled={updateBindingStatus.isPending || transitionPendingByBinding[binding.id]}
+                >
                   Disable
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => transitionBinding(binding.id, 'retired')} disabled={updateBindingStatus.isPending}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => transitionBinding(binding.id, 'retired')}
+                  disabled={updateBindingStatus.isPending || transitionPendingByBinding[binding.id]}
+                >
                   Retire
                 </Button>
               </div>
@@ -717,8 +815,8 @@ function BindingForm({
           ))}
         </div>
 
-        <MutationError mutationError={createBinding.error} />
-        <MutationError mutationError={updateBindingStatus.error} />
+        <MutationError mutationError={createBinding.error} operation="binding_create" />
+        <MutationError mutationError={updateBindingStatus.error} operation="binding_transition" />
       </CardContent>
     </Card>
   );
@@ -741,10 +839,12 @@ function BindingSwitchoverRow({
   const { data } = usePostBaseBindingSwitchovers(bindingId);
   const pending = (data ?? []).find((item) => item.status === 'pending' || item.status === 'failed');
   const preflight = pending?.execution_state_json?.preflight_report as Record<string, { ok?: boolean; detail?: string }> | undefined;
+  const preflightBlocked = Boolean(preflight && Object.values(preflight).some((result) => result.ok === false));
 
   if (!pending) {
     return (
       <div className="space-y-2 rounded border border-gray-200 p-2 text-gray-500">
+        <OperationGuardNotice operation="switchover_plan" />
         <div>{capability}: no pending switchover (current provider: {currentProvider})</div>
         <div className="flex flex-wrap items-center gap-2">
           <Input value={targetProvider} onChange={(event) => setTargetProvider(event.target.value)} placeholder="Target provider key" />
@@ -758,7 +858,7 @@ function BindingSwitchoverRow({
             Plan switchover
           </Button>
         </div>
-        <MutationError mutationError={createSwitchover.error} />
+        <MutationError mutationError={createSwitchover.error} operation="switchover_plan" />
       </div>
     );
   }
@@ -771,14 +871,29 @@ function BindingSwitchoverRow({
           <p className="text-xs text-gray-500">strategy: {pending.strategy} · {pending.execution_detail}</p>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" onClick={() => executeSwitchover.mutate(pending.id)} disabled={executeSwitchover.isPending}>
-            Execute
+          <Button
+            size="sm"
+            onClick={() => executeSwitchover.mutate(pending.id)}
+            disabled={executeSwitchover.isPending || preflightBlocked}
+          >
+            {executeSwitchover.isPending ? 'Executing…' : 'Execute'}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => executeSwitchover.mutate(pending.id)} disabled={executeSwitchover.isPending}>
-            Rollback/Resume
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => executeSwitchover.mutate(pending.id)}
+            disabled={executeSwitchover.isPending || preflightBlocked}
+          >
+            {pending.status === 'failed' ? 'Retry execute' : 'Rollback execute'}
           </Button>
         </div>
       </div>
+      <OperationGuardNotice operation="switchover_execute" />
+      {preflightBlocked ? (
+        <p className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+          Switchover execution blocked: clear preflight failures below before executing or retrying.
+        </p>
+      ) : null}
 
       {preflight && (
         <div className="space-y-1 rounded border border-gray-200 p-2 text-xs text-gray-600">
@@ -791,18 +906,32 @@ function BindingSwitchoverRow({
         </div>
       )}
 
-      <MutationError mutationError={executeSwitchover.error} />
+      <MutationError mutationError={executeSwitchover.error} operation="switchover_execute" />
     </div>
   );
 }
 
-function MutationError({ mutationError }: { mutationError: unknown }) {
+function OperationGuardNotice({ operation }: { operation: HighRiskOperation }) {
+  return (
+    <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+      {HIGH_RISK_PREFLIGHT_COPY[operation]}
+    </p>
+  );
+}
+
+function MutationError({ mutationError, operation }: { mutationError: unknown; operation?: HighRiskOperation }) {
   if (!mutationError) {
     return null;
   }
 
   const message = extractMutationError(mutationError);
-  return <p className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">{message}</p>;
+  const remediation = operation ? buildOperationRemediation(operation) : 'Review request payload, permissions, and dependent resource health.';
+  return (
+    <div className="space-y-1 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+      <p>{message}</p>
+      <p className="font-medium">Remediation: {remediation}</p>
+    </div>
+  );
 }
 
 function isPermissionDenied(error: unknown): boolean {
@@ -828,4 +957,24 @@ function extractMutationError(error: unknown): string {
     return error.message;
   }
   return 'Mutation failed. Please retry.';
+}
+
+export function buildOperationRemediation(operation: HighRiskOperation): string {
+  switch (operation) {
+    case 'binding_create':
+    case 'binding_transition':
+      return 'Confirm provider catalog support, validate secret references, and retry with a clear transition reason.';
+    case 'secret_create':
+    case 'secret_rotate':
+    case 'secret_deactivate':
+      return 'Validate secret scope/value, ensure no active dependency breakage, and retry after rotation/deactivation checks.';
+    case 'migration_apply':
+    case 'migration_retry':
+      return 'Inspect migration error details, reconcile schema drift, then retry once environment readiness returns to healthy.';
+    case 'switchover_plan':
+    case 'switchover_execute':
+      return 'Resolve preflight blockers, verify target provider readiness, and re-run under an operator-approved change window.';
+    default:
+      return 'Review payload and permission scope, then retry.';
+  }
 }
