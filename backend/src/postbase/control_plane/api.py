@@ -19,6 +19,7 @@ from src.postbase.control_plane.schemas import (
     EnvironmentApiKeyIssued,
     EnvironmentApiKeyRead,
     EnvironmentCreate,
+    EnvironmentLifecycleUpdate,
     EnvironmentRead,
     NamespaceCreate,
     NamespaceRead,
@@ -26,6 +27,7 @@ from src.postbase.control_plane.schemas import (
     MigrationRollbackResult,
     ProjectOverviewRead,
     ProjectCreate,
+    ProjectLifecycleUpdate,
     ProjectRead,
     ProviderCatalogRead,
     ProviderHealthRead,
@@ -51,6 +53,8 @@ from src.postbase.control_plane.service import (
     create_environment_for_project,
     create_namespace_metadata,
     create_project_for_tenant,
+    set_project_lifecycle_state,
+    set_environment_lifecycle_state,
     create_secret_ref,
     apply_schema_migration,
     retry_schema_migration,
@@ -98,6 +102,7 @@ CONTROL_PLANE_MUTATION_MIN_ROLES: dict[str, TenantRole] = {
     "environment_keys": TenantRole.ADMIN,
     "namespaces": TenantRole.ADMIN,
     "tables": TenantRole.ADMIN,
+    "environment_lifecycle": TenantRole.ADMIN,
 }
 
 
@@ -244,6 +249,25 @@ async def create_project(
     )
 
 
+@router.post("/projects/{project_id}/lifecycle", response_model=ProjectRead)
+async def update_project_lifecycle(
+    project_id: str,
+    payload: ProjectLifecycleUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Project:
+    project_db_id = decode_id_or_404(project_id)
+    project = await db.get(Project, project_db_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return await set_project_lifecycle_state(
+        db,
+        project=project,
+        actor=current_user,
+        is_active=payload.is_active,
+    )
+
+
 @router.get("/projects", response_model=PaginatedResponse[ProjectRead])
 async def list_projects(
     db: AsyncSession = Depends(get_db),
@@ -302,6 +326,31 @@ async def list_environments(
         await db.execute(select(Environment).where(Environment.project_id == project.id))
     ).scalars().all()
     return rows
+
+
+@router.post("/environments/{environment_id}/lifecycle", response_model=EnvironmentRead)
+async def update_environment_lifecycle(
+    environment_id: str,
+    payload: EnvironmentLifecycleUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Environment:
+    environment = await _load_environment_or_404(db, environment_id)
+    project = await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="environment_lifecycle",
+    )
+    return await set_environment_lifecycle_state(
+        db,
+        environment=environment,
+        project=project,
+        actor=current_user,
+        status_value=payload.status,
+        is_active=payload.is_active,
+        reason=payload.reason,
+    )
 
 
 @router.get("/environments/{environment_id}/bindings", response_model=list[BindingRead])
@@ -795,13 +844,25 @@ async def drain_environment_webhooks(
     current_user: User = Depends(get_current_user),
 ) -> WebhookDrainResult:
     environment = await _load_environment_or_404(db, environment_id)
-    await _authorize_environment_mutation(
+    project = await _authorize_environment_mutation(
         db,
         environment=environment,
         current_user=current_user,
         action="webhook_drain",
     )
     drained_count = await drain_due_webhook_jobs(limit=limit)
+    await record_audit_event(
+        db,
+        action="webhook.drain_triggered",
+        entity_type="environment",
+        entity_id=str(environment.id),
+        actor_user_id=current_user.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"limit": limit, "drained_count": drained_count, "outcome": "allowed"},
+    )
+    await db.commit()
     return WebhookDrainResult(
         triggered=True,
         drained_count=drained_count,
@@ -821,13 +882,24 @@ async def recover_exhausted_webhooks(
     current_user: User = Depends(get_current_user),
 ) -> WebhookRecoveryResult:
     environment = await _load_environment_or_404(db, environment_id)
-    await _authorize_environment_mutation(
+    project = await _authorize_environment_mutation(
         db,
         environment=environment,
         current_user=current_user,
         action="webhook_recover",
     )
     dead_letters = await replay_dead_letter_webhook_jobs(db, limit=limit)
+    await record_audit_event(
+        db,
+        action="webhook.recover_triggered",
+        entity_type="environment",
+        entity_id=str(environment.id),
+        actor_user_id=current_user.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"limit": limit, "requeued_jobs": len(dead_letters), "outcome": "allowed"},
+    )
     await db.commit()
     return WebhookRecoveryResult(
         scanned_failed_jobs=len(dead_letters),
@@ -1015,6 +1087,18 @@ async def retry_environment_migration(
         project=project,
         actor=current_user,
     )
+    await record_audit_event(
+        db,
+        action="migration.retry_requested",
+        entity_type="schema_migration",
+        entity_id=str(migration.id),
+        actor_user_id=current_user.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"version": migration.version, "outcome": "allowed"},
+    )
+    await db.commit()
     migration_read = await _to_migration_read(db, migration)
     return MigrationRollbackResult(
         migration=migration_read,
@@ -1035,7 +1119,7 @@ async def reconcile_environment_migration(
 ) -> MigrationRead:
     environment = await _load_environment_or_404(db, environment_id)
     migration_db_id = decode_id_or_404(migration_id)
-    await _authorize_environment_mutation(
+    project = await _authorize_environment_mutation(
         db,
         environment=environment,
         current_user=current_user,
@@ -1045,6 +1129,17 @@ async def reconcile_environment_migration(
     if migration is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
     refreshed = await execute_migration_reconciliation(db, migration=migration)
+    await record_audit_event(
+        db,
+        action="migration.reconciled",
+        entity_type="schema_migration",
+        entity_id=str(refreshed.id),
+        actor_user_id=current_user.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"version": refreshed.version, "reconciliation_status": refreshed.reconciliation_status, "outcome": "allowed"},
+    )
     await db.commit()
     return await _to_migration_read(db, refreshed)
 

@@ -108,6 +108,11 @@ SWITCHOVER_PHASE_ORDER = [
     "retire_old_binding",
     "completed",
 ]
+LEGAL_ENVIRONMENT_STATUS_TRANSITIONS: dict[EnvironmentStatus, set[EnvironmentStatus]] = {
+    EnvironmentStatus.ACTIVE: {EnvironmentStatus.DEGRADED, EnvironmentStatus.INACTIVE},
+    EnvironmentStatus.DEGRADED: {EnvironmentStatus.ACTIVE, EnvironmentStatus.INACTIVE},
+    EnvironmentStatus.INACTIVE: {EnvironmentStatus.ACTIVE},
+}
 
 
 def _forbidden_role_payload(*, required_role: TenantRole) -> dict[str, str]:
@@ -323,6 +328,86 @@ async def create_environment_for_project(
         project_id=project.id,
         environment_id=environment.id,
         payload={"name": name, "slug": slug, "stage": stage},
+    )
+    await db.commit()
+    await db.refresh(environment)
+    return environment
+
+
+async def set_project_lifecycle_state(
+    db: AsyncSession,
+    *,
+    project: Project,
+    actor: User,
+    is_active: bool,
+) -> Project:
+    await require_project_access(db, project=project, user_id=actor.id, min_role=TenantRole.ADMIN)
+    project.is_active = is_active
+    touch_updated_at(project)
+    await db.flush()
+    await record_audit_event(
+        db,
+        action="project.lifecycle_updated",
+        entity_type="project",
+        entity_id=str(project.id),
+        actor_user_id=actor.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        payload={"is_active": is_active, "outcome": "allowed"},
+    )
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
+async def set_environment_lifecycle_state(
+    db: AsyncSession,
+    *,
+    environment: Environment,
+    project: Project,
+    actor: User,
+    status_value: EnvironmentStatus | None,
+    is_active: bool | None,
+    reason: str | None,
+) -> Environment:
+    await require_project_access(db, project=project, user_id=actor.id, min_role=TenantRole.ADMIN)
+    current_status = environment.status
+    target_status = status_value or current_status
+    if current_status != target_status and target_status not in LEGAL_ENVIRONMENT_STATUS_TRANSITIONS.get(current_status, set()):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "environment_invalid_status_transition",
+                "message": "invalid_status_transition",
+                "environment_id": encode_id(environment.id),
+                "from_status": current_status.value,
+                "to_status": target_status.value,
+            },
+        )
+    if is_active is False:
+        target_status = EnvironmentStatus.INACTIVE
+    if is_active is None:
+        is_active = environment.is_active
+    environment.is_active = is_active
+    environment.status = target_status
+    environment.readiness_detail = reason or environment.readiness_detail
+    touch_updated_at(environment)
+    await db.flush()
+    await record_audit_event(
+        db,
+        action="environment.lifecycle_updated",
+        entity_type="environment",
+        entity_id=str(environment.id),
+        actor_user_id=actor.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={
+            "status": environment.status.value,
+            "is_active": environment.is_active,
+            "reason": reason or "",
+            "outcome": "allowed",
+        },
     )
     await db.commit()
     await db.refresh(environment)
@@ -1133,6 +1218,7 @@ async def execute_switchover_plan(
             target_health = await target_adapter.health()
             if not target_health.ready:
                 raise RuntimeError(f"target provider health validation failed: {target_health.detail}")
+            await _validate_binding_activation_prerequisites(db, binding=binding, provider=target_provider)
             binding.status = BindingStatus.ACTIVE
             binding.readiness_detail = "switchover target validated"
             binding.last_transition_actor_user_id = actor.id
@@ -1412,6 +1498,24 @@ async def _required_secret_validation_detail(
     return missing_secret_kinds, ", ".join(missing_secret_kinds)
 
 
+async def _validate_binding_activation_prerequisites(
+    db: AsyncSession,
+    *,
+    binding: CapabilityBinding,
+    provider: ProviderCatalogEntry,
+) -> None:
+    missing_secret_kinds, missing_secret_detail = await _required_secret_validation_detail(
+        db,
+        binding_id=binding.id,
+        provider=provider,
+    )
+    if missing_secret_kinds:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot activate binding: missing or expired secrets [{missing_secret_detail}]",
+        )
+
+
 async def set_binding_status(
     db: AsyncSession,
     *,
@@ -1449,16 +1553,7 @@ async def set_binding_status(
         provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
         if provider is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
-        missing_secret_kinds, missing_secret_detail = await _required_secret_validation_detail(
-            db,
-            binding_id=binding.id,
-            provider=provider,
-        )
-        if missing_secret_kinds:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot activate binding: missing or expired secrets [{missing_secret_detail}]",
-            )
+        await _validate_binding_activation_prerequisites(db, binding=binding, provider=provider)
 
     binding.status = status_value
     binding.last_transition_actor_user_id = actor.id
