@@ -178,3 +178,9 @@ export interface PostBaseWebhookDrainResult {
   drained_count: number;
   checklist: PostBaseOperationsChecklistItem[];
 }
+
+export interface PostBaseWebhookRecoveryResult {
+  scanned_failed_jobs: number;
+  requeued_jobs: number;
+  exhausted_job_ids: string[];
+}

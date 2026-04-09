@@ -17,6 +17,7 @@ import type {
   PostBaseSwitchoverRead,
   PostBaseUsageMeterRead,
   PostBaseWebhookDrainResult,
+  PostBaseWebhookRecoveryResult,
 } from '@/types';
 
 export function usePostBaseProviderCatalog() {
@@ -150,6 +151,7 @@ export function usePostBaseMigrations(environmentId: string | undefined) {
     },
     enabled: Boolean(environmentId),
     staleTime: 10_000,
+    refetchInterval: 10_000,
   });
 }
 
@@ -424,6 +426,44 @@ export function useDrainPostBaseWebhooks(environmentId: string | undefined) {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
       await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'migrations'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+    },
+  });
+}
+
+export function useRecoverPostBaseWebhooks(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (limit: number = 200) => {
+      const response = await apiClient.post<PostBaseWebhookRecoveryResult>(
+        `/environments/${environmentId}/operations/webhooks/recover-exhausted?limit=${limit}`,
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'migrations'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+    },
+  });
+}
+
+export function useReconcilePostBaseMigration(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  const queryKey = ['postbase', 'environments', environmentId, 'migrations'] as const;
+
+  return useMutation({
+    mutationFn: async (migrationId: string) => {
+      const response = await apiClient.post<PostBaseMigrationRead>(
+        `/environments/${environmentId}/migrations/${migrationId}/reconcile`,
+      );
+      return response.data;
+    },
+    onSuccess: async (migration) => {
+      queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === migration.id ? migration : item)),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
       await queryClient.invalidateQueries({ queryKey: ['postbase'] });
     },
   });
