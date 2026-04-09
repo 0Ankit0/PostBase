@@ -2,6 +2,19 @@
 
 Validation date: **2026-04-08**.
 
+## 2026-04-09 drill execution addendum (reliability + security)
+
+| Drill | Outcome | Safeguards verified | Observable signal + threshold | Evidence |
+|---|---|---|---|---|
+| DB failover | Pass | Idempotent operator replay, transactional write boundaries | Failover detect/recover timeline tracked (TTD/TTR) | [EV-REL-001](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+| Queue backlog surge | Pass | Retry ceiling, dead-letter routing, circuit-break batch halt | `webhook_backlog_alert_total` when queue depth ≥ 150 | [EV-REL-002](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+| Worker restart recovery | Pass | Drain + replay workflow for retrying/dead-letter states | Recovery SLO + queue age observed during restart window | [EV-REL-003](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+| Switchover rollback | Pass | Rollback path from RUNNING/FAILED to previous provider | Switchover audit continuity and rollback checkpoint markers | [EV-REL-004](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+| Secret rotation under load | Pass | Active-version fallback, rotation bounded by health checks | Rotation status + auth anomalies reviewed live | [EV-SEC-101](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+| Audit integrity checks | Pass | Audit chain continuity checks and checksum validation | Audit mismatch threshold set to zero tolerance | [EV-SEC-102](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+| Tenant isolation abuse | Pass | Cross-tenant access checks on binding/secret linkage | Access-denied anomalies reviewed per attempt | [EV-SEC-103](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+| Webhook abuse scenarios | Pass | Timeout budget (5000ms), retry ceiling (6), circuit break, dead-letter | `webhook_auth_anomaly_total` when auth failures ≥ 3 | [EV-SEC-104](./staging-evidence.md#staging-validation-evidence-2026-04-09) |
+
 This matrix treats every edge-case file in this directory as a required checklist and maps each scenario to backend behavior, operator action, observable signal, rollback path, and staging validation evidence.
 
 | Priority | Edge case | Backend behavior | Operator action | Observable signal (logs/metrics/audit) | Rollback path | Validated in staging | Evidence |
