@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Column, UniqueConstraint
+from sqlalchemy import JSON, Column, Index, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 from src.postbase.domain.enums import (
@@ -94,7 +94,16 @@ class ProviderCatalogEntry(SQLModel, table=True):
 
 class CapabilityBinding(SQLModel, table=True):
     __tablename__ = "postbase_capability_binding"
-    __table_args__ = ()
+    __table_args__ = (
+        Index(
+            "uq_postbase_capability_binding_active_per_capability_env",
+            "environment_id",
+            "capability_type_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     environment_id: int = Field(foreign_key="postbase_environment.id", index=True)

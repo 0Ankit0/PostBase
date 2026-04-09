@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timezone, datetime
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -152,6 +153,14 @@ def _assert_binding_transition_is_legal(
                 target_status=target_status,
             ),
         )
+
+
+def _is_active_binding_uniqueness_error(exc: IntegrityError) -> bool:
+    message = str(exc.orig).lower()
+    return (
+        "uq_postbase_capability_binding_active_per_capability_env" in message
+        or "postbase_capability_binding.environment_id, postbase_capability_binding.capability_type_id" in message
+    )
 
 
 async def require_tenant_role(
@@ -755,6 +764,9 @@ async def execute_switchover_plan(
         binding.provider_catalog_entry_id = switchover.target_provider_catalog_entry_id
         binding.status = BindingStatus.ACTIVE
         binding.readiness_detail = "switchover executed"
+        binding.last_transition_actor_user_id = actor.id
+        binding.last_transition_reason = "switchover_executed"
+        binding.last_transition_at = datetime.now(timezone.utc)
         touch_updated_at(binding)
         switchover.status = SwitchoverStatus.COMPLETED
         switchover.execution_detail = "switchover executed successfully"
@@ -764,6 +776,9 @@ async def execute_switchover_plan(
         binding.provider_catalog_entry_id = previous_provider_catalog_entry_id
         binding.status = BindingStatus.ACTIVE
         binding.readiness_detail = "switchover rollback to previous provider"
+        binding.last_transition_actor_user_id = actor.id
+        binding.last_transition_reason = "switchover_rollback"
+        binding.last_transition_at = datetime.now(timezone.utc)
         touch_updated_at(binding)
         switchover.status = SwitchoverStatus.FAILED
         switchover.execution_detail = f"rollback_complete:{exc}"
@@ -958,7 +973,29 @@ async def set_binding_status(
     binding.last_transition_reason = reason or "manual_status_update"
     binding.last_transition_at = datetime.now(timezone.utc)
     touch_updated_at(binding)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        if _is_active_binding_uniqueness_error(exc):
+            conflicting_active = (
+                await db.execute(
+                    select(CapabilityBinding).where(
+                        CapabilityBinding.environment_id == binding.environment_id,
+                        CapabilityBinding.capability_type_id == binding.capability_type_id,
+                        CapabilityBinding.status == BindingStatus.ACTIVE,
+                        CapabilityBinding.id != binding.id,
+                    )
+                )
+            ).scalars().first()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_active_binding_conflict_payload(
+                    binding_id=binding.id,
+                    conflicting_binding_id=conflicting_active.id if conflicting_active is not None else binding.id,
+                ),
+            ) from exc
+        raise
     await record_audit_event(
         db,
         action="binding.status_updated",

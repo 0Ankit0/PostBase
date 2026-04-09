@@ -868,7 +868,11 @@ async def test_binding_status_transition_matrix_enforces_valid_and_invalid_edges
             )
             if target in allowed_targets[source]:
                 assert response.status_code == 200, response.text
-                assert response.json()["status"] == target
+                payload = response.json()
+                assert payload["status"] == target
+                assert payload["last_transition_reason"] == f"{source}_to_{target}"
+                assert payload["last_transition_actor_user_id"] is not None
+                assert payload["last_transition_at"] is not None
             else:
                 assert response.status_code == 409, response.text
                 detail = response.json()["detail"]
