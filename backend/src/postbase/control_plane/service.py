@@ -372,6 +372,7 @@ async def create_secret_ref(
             select(SecretRef).where(
                 SecretRef.environment_id == environment.id,
                 SecretRef.name == name,
+                SecretRef.is_active_version == True,
             )
         )
     ).scalars().first()
@@ -383,9 +384,12 @@ async def create_secret_ref(
         name=name,
         provider_key=provider_key,
         secret_kind=secret_kind,
+        version=1,
+        is_active_version=True,
         encrypted_value=secret_store.encrypt(secret_value),
         value_hash=hash_secret(secret_value),
         last_four=secret_value[-4:] if secret_value else "",
+        rotated_at=datetime.now(timezone.utc),
     )
     db.add(secret_ref)
     await db.flush()
@@ -414,7 +418,13 @@ async def rotate_secret_ref(
     actor: User,
     secret_value: str,
 ) -> SecretRef:
-    impacted_bindings = await _list_bindings_using_secret(db, secret_ref_id=secret_ref.id)
+    impacted_bindings = await _list_bindings_using_secret_family(
+        db,
+        environment_id=secret_ref.environment_id,
+        name=secret_ref.name,
+        provider_key=secret_ref.provider_key,
+        secret_kind=secret_ref.secret_kind,
+    )
     if not impacted_bindings:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -422,21 +432,43 @@ async def rotate_secret_ref(
         )
 
     secret_store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
-    previous_encrypted_value = secret_ref.encrypted_value
-    previous_hash = secret_ref.value_hash
-    previous_last_four = secret_ref.last_four
-    secret_ref.encrypted_value = secret_store.encrypt(secret_value)
-    secret_ref.value_hash = hash_secret(secret_value)
-    secret_ref.last_four = secret_value[-4:] if secret_value else ""
-    secret_ref.status = SecretStatus.ACTIVE
+    current_active = (
+        await db.execute(
+            select(SecretRef)
+            .where(
+                SecretRef.environment_id == secret_ref.environment_id,
+                SecretRef.name == secret_ref.name,
+                SecretRef.provider_key == secret_ref.provider_key,
+                SecretRef.secret_kind == secret_ref.secret_kind,
+                SecretRef.is_active_version == True,
+            )
+            .order_by(SecretRef.version.desc())
+        )
+    ).scalars().first()
+    next_version = (current_active.version if current_active is not None else secret_ref.version) + 1
+    rotated_secret = SecretRef(
+        environment_id=secret_ref.environment_id,
+        name=secret_ref.name,
+        provider_key=secret_ref.provider_key,
+        secret_kind=secret_ref.secret_kind,
+        version=next_version,
+        is_active_version=True,
+        status=SecretStatus.ACTIVE,
+        encrypted_value=secret_store.encrypt(secret_value),
+        value_hash=hash_secret(secret_value),
+        last_four=secret_value[-4:] if secret_value else "",
+        rotated_at=datetime.now(timezone.utc),
+    )
+    if current_active is not None:
+        current_active.is_active_version = False
+        touch_updated_at(current_active)
+    secret_ref.is_active_version = False
     touch_updated_at(secret_ref)
+    db.add(rotated_secret)
     try:
         await db.flush()
     except Exception as exc:
-        secret_ref.encrypted_value = previous_encrypted_value
-        secret_ref.value_hash = previous_hash
-        secret_ref.last_four = previous_last_four
-        touch_updated_at(secret_ref)
+        await db.rollback()
         await record_audit_event(
             db,
             action="secret.rotation_failed",
@@ -462,8 +494,8 @@ async def rotate_secret_ref(
         payload={"name": secret_ref.name, "provider_key": secret_ref.provider_key},
     )
     await db.commit()
-    await db.refresh(secret_ref)
-    return secret_ref
+    await db.refresh(rotated_secret)
+    return rotated_secret
 
 
 async def revoke_secret_ref(
@@ -1089,16 +1121,11 @@ async def create_binding_version(
     for secret_ref_id in secret_ref_ids:
         db.add(BindingSecretRef(binding_id=binding.id, secret_ref_id=secret_ref_id))
 
-    required_secret_kinds = provider.metadata_json.get("required_secret_kinds", [])
-    linked_secrets = (
-        await db.execute(
-            select(SecretRef)
-            .join(BindingSecretRef, BindingSecretRef.secret_ref_id == SecretRef.id)
-            .where(BindingSecretRef.binding_id == binding.id, SecretRef.status == SecretStatus.ACTIVE)
-        )
-    ).scalars().all()
-    linked_secret_kinds = {item.secret_kind for item in linked_secrets}
-    missing_secret_kinds = sorted(set(required_secret_kinds) - linked_secret_kinds)
+    missing_secret_kinds, missing_secret_detail = await _required_secret_validation_detail(
+        db,
+        binding_id=binding.id,
+        provider=provider,
+    )
 
     supported_regions = provider.metadata_json.get("supported_regions", ["global"])
     region_valid = region is None or "global" in supported_regions or region in supported_regions
@@ -1106,7 +1133,7 @@ async def create_binding_version(
         binding.status = BindingStatus.FAILED
         details = []
         if missing_secret_kinds:
-            details.append(f"missing secrets: {', '.join(missing_secret_kinds)}")
+            details.append(f"missing or expired secrets: {missing_secret_detail}")
         if not region_valid:
             details.append(f"unsupported region '{region}'")
         binding.readiness_detail = "; ".join(details)
@@ -1153,6 +1180,74 @@ async def _list_bindings_using_secret(db: AsyncSession, *, secret_ref_id: int) -
     ).scalars().all()
 
 
+async def _list_bindings_using_secret_family(
+    db: AsyncSession,
+    *,
+    environment_id: int,
+    name: str,
+    provider_key: str,
+    secret_kind: str,
+) -> list[int]:
+    return (
+        await db.execute(
+            select(BindingSecretRef.binding_id)
+            .join(SecretRef, BindingSecretRef.secret_ref_id == SecretRef.id)
+            .where(
+                SecretRef.environment_id == environment_id,
+                SecretRef.name == name,
+                SecretRef.provider_key == provider_key,
+                SecretRef.secret_kind == secret_kind,
+            )
+            .distinct()
+        )
+    ).scalars().all()
+
+
+async def _resolve_latest_valid_secret_for_anchor(db: AsyncSession, *, anchor_secret: SecretRef) -> SecretRef | None:
+    now = datetime.now(timezone.utc)
+    return (
+        await db.execute(
+            select(SecretRef)
+            .where(
+                SecretRef.environment_id == anchor_secret.environment_id,
+                SecretRef.name == anchor_secret.name,
+                SecretRef.provider_key == anchor_secret.provider_key,
+                SecretRef.secret_kind == anchor_secret.secret_kind,
+                SecretRef.status == SecretStatus.ACTIVE,
+                (SecretRef.expires_at.is_(None) | (SecretRef.expires_at > now)),
+            )
+            .order_by(
+                SecretRef.is_active_version.desc(),
+                SecretRef.version.desc(),
+                SecretRef.updated_at.desc(),
+            )
+        )
+    ).scalars().first()
+
+
+async def _required_secret_validation_detail(
+    db: AsyncSession,
+    *,
+    binding_id: int,
+    provider: ProviderCatalogEntry,
+) -> tuple[list[str], str]:
+    required_secret_kinds = provider.metadata_json.get("required_secret_kinds", [])
+    anchor_secrets = (
+        await db.execute(
+            select(SecretRef)
+            .join(BindingSecretRef, BindingSecretRef.secret_ref_id == SecretRef.id)
+            .where(BindingSecretRef.binding_id == binding_id)
+        )
+    ).scalars().all()
+    resolved_by_kind: dict[str, SecretRef] = {}
+    for anchor in anchor_secrets:
+        latest_valid = await _resolve_latest_valid_secret_for_anchor(db, anchor_secret=anchor)
+        if latest_valid is not None and latest_valid.secret_kind not in resolved_by_kind:
+            resolved_by_kind[latest_valid.secret_kind] = latest_valid
+    missing_secret_kinds = sorted(set(required_secret_kinds) - set(resolved_by_kind.keys()))
+    return missing_secret_kinds, ", ".join(missing_secret_kinds)
+
+
 async def set_binding_status(
     db: AsyncSession,
     *,
@@ -1186,6 +1281,19 @@ async def set_binding_status(
                     binding_id=binding.id,
                     conflicting_binding_id=active_conflict.id,
                 ),
+            )
+        provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
+        if provider is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+        missing_secret_kinds, missing_secret_detail = await _required_secret_validation_detail(
+            db,
+            binding_id=binding.id,
+            provider=provider,
+        )
+        if missing_secret_kinds:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot activate binding: missing or expired secrets [{missing_secret_detail}]",
             )
 
     binding.status = status_value

@@ -312,6 +312,8 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
     assert rotate_response.status_code == 200, rotate_response.text
     assert rotate_response.json()["secret"]["last_four"] == "9876"
     assert rotate_response.json()["secret"]["status"] == "active"
+    assert rotate_response.json()["secret"]["version"] == 2
+    assert rotate_response.json()["secret"]["is_active_version"] is True
     assert rotate_response.json()["rollback_ready"] is True
 
     webhook_channel_response = await client.post(
@@ -439,7 +441,9 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         headers=owner_headers,
     )
     assert secrets_response.status_code == 200, secrets_response.text
-    assert secrets_response.json()[0]["status"] == "revoked"
+    secret_states = {(item["version"], item["status"], item["is_active_version"]) for item in secrets_response.json()}
+    assert (1, "revoked", False) in secret_states
+    assert (2, "active", True) in secret_states
 
     recovered_overview_response = await client.get(
         f"/api/v1/projects/{project_id}/overview",
