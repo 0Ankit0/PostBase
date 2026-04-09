@@ -1,10 +1,16 @@
-.PHONY: copy-env setup docs docs-check deploy-readiness backend-lint backend-test backend-dev backend-migrate frontend-lint frontend-test frontend-dev mobile-lint mobile-test mobile-dev dev-up infra-up dev-down infra-down health-check lint test dev ci
+.PHONY: copy-env setup bootstrap-local bootstrap-staging docs docs-check deploy-readiness backend-lint backend-test backend-dev backend-migrate frontend-lint frontend-test frontend-dev mobile-lint mobile-test mobile-dev dev-up infra-up dev-down infra-down health-check lint test baseline-checks dev ci
 
 copy-env:
 	./scripts/copy_env_templates.sh
 
 setup:
 	./scripts/setup_template.sh
+
+bootstrap-local:
+	./scripts/bootstrap.sh local
+
+bootstrap-staging:
+	./scripts/bootstrap.sh staging
 
 docs:
 	python3 scripts/validate_documentation.py
@@ -75,6 +81,8 @@ health-check:
 lint: backend-lint frontend-lint mobile-lint
 
 test: backend-test frontend-test mobile-test
+
+baseline-checks: backend-lint backend-test frontend-lint frontend-test mobile-lint mobile-test
 
 dev:
 	@echo "Run services in separate terminals:"
