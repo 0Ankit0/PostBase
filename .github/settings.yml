@@ -18,12 +18,12 @@ branches:
           - deploy-readiness
           - backend-lint
           - backend-tests
-          - backend-integration
           - frontend-lint
           - frontend-typecheck
           - frontend-tests
           - mobile-lint
           - mobile-tests
+          - ci-required
       enforce_admins: true
       required_pull_request_reviews:
         dismiss_stale_reviews: true
@@ -39,12 +39,12 @@ branches:
           - deploy-readiness
           - backend-lint
           - backend-tests
-          - backend-integration
           - frontend-lint
           - frontend-typecheck
           - frontend-tests
           - mobile-lint
           - mobile-tests
+          - ci-required
       enforce_admins: true
       required_pull_request_reviews:
         dismiss_stale_reviews: true
@@ -60,12 +60,12 @@ branches:
           - deploy-readiness
           - backend-lint
           - backend-tests
-          - backend-integration
           - frontend-lint
           - frontend-typecheck
           - frontend-tests
           - mobile-lint
           - mobile-tests
+          - ci-required
       enforce_admins: true
       required_pull_request_reviews:
         dismiss_stale_reviews: true

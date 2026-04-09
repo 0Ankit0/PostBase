@@ -15,5 +15,8 @@ copy_if_missing() {
 }
 
 copy_if_missing "backend/.env.example" "backend/.env"
+copy_if_missing "backend/.env.staging.example" "backend/.env.staging"
 copy_if_missing "frontend/.env.local.example" "frontend/.env.local"
+copy_if_missing "frontend/.env.staging.local.example" "frontend/.env.staging.local"
 copy_if_missing "mobile/.env.example" "mobile/.env"
+copy_if_missing "mobile/.env.staging.example" "mobile/.env.staging"
