@@ -55,8 +55,19 @@ export interface PostBaseMigrationRead {
   version: string;
   status: 'pending' | 'applied' | 'failed';
   reconciliation_status: 'pending_apply' | 'in_sync' | 'drifted';
+  drift_severity?: string | null;
+  affected_entities?: string[];
+  reconcile_attempt_count?: number;
+  reconcile_error_text?: string | null;
+  last_reconciled_at?: string | null;
   applied_sql: string;
   created_at: string;
+}
+
+export interface PostBaseMigrationRetryResult {
+  migration: PostBaseMigrationRead;
+  rollback_sql: string;
+  rollback_status: string;
 }
 
 export interface PostBaseSecretRead {
@@ -65,10 +76,20 @@ export interface PostBaseSecretRead {
   name: string;
   provider_key: string;
   secret_kind: string;
+  version?: number;
+  is_active_version?: boolean;
   status: string;
+  rotated_at?: string | null;
+  expires_at?: string | null;
   last_four: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface PostBaseSecretRotateResult {
+  secret: PostBaseSecretRead;
+  impacted_binding_ids: string[];
+  rollback_ready: boolean;
 }
 
 export interface PostBaseProviderCatalogRead {
@@ -94,8 +115,10 @@ export interface PostBaseSwitchoverRead {
   capability_binding_id: string;
   target_provider_catalog_entry_id: string;
   strategy: string;
+  retirement_strategy?: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   execution_detail: string;
+  execution_state_json?: Record<string, unknown>;
   created_at: string;
   completed_at: string | null;
 }
