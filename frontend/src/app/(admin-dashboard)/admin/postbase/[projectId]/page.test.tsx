@@ -3,6 +3,7 @@ import type { AxiosError } from 'axios';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   buildReadinessRemediations,
+  deriveQuerySurfaceState,
   isReadinessHealthy,
   OperationStatusSummary,
 } from './page';
@@ -63,5 +64,39 @@ describe('PostBase admin control plane helpers', () => {
     expect(markup).toContain('Permission-restricted for one or more actions.');
     expect(markup).toContain('Webhook drain complete: 3 job(s) drained.');
     expect(markup).toContain('Latest reconciliation poll:');
+  });
+
+  it('derives loading, success, error, and stale-cache query states', () => {
+    expect(
+      deriveQuerySurfaceState({
+        isPending: true,
+        isError: false,
+        hasData: false,
+      }),
+    ).toBe('loading');
+
+    expect(
+      deriveQuerySurfaceState({
+        isPending: false,
+        isError: false,
+        hasData: true,
+      }),
+    ).toBe('success');
+
+    expect(
+      deriveQuerySurfaceState({
+        isPending: false,
+        isError: true,
+        hasData: false,
+      }),
+    ).toBe('error');
+
+    expect(
+      deriveQuerySurfaceState({
+        isPending: false,
+        isError: true,
+        hasData: true,
+      }),
+    ).toBe('stale-cache');
   });
 });

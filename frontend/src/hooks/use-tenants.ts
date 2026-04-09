@@ -214,6 +214,7 @@ export function useDeleteInvitation() {
 }
 
 export function useSwitchTenant() {
+  const queryClient = useQueryClient();
   const { setTenant } = useAuthStore();
 
   return useMutation({
@@ -222,6 +223,8 @@ export function useSwitchTenant() {
       return tenant;
     },
     onSuccess: (tenant) => {
+      queryClient.removeQueries({ queryKey: ['postbase'] });
+      queryClient.invalidateQueries({ queryKey: ['postbase', tenant.id] });
       analytics.group('organization', tenant.id, { name: tenant.name });
     },
   });
