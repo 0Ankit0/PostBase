@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from src.postbase.domain.enums import BindingStatus, CapabilityKey
+from src.postbase.domain.enums import BindingStatus, CapabilityKey, SecretStatus
 from src.apps.core.config import settings
 from src.postbase.domain.models import (
     BindingSecretRef,
@@ -47,14 +49,36 @@ async def resolve_active_binding(
         )
     binding, provider = row
     secret_store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
-    secret_rows = (
+    anchor_secret_rows = (
         await db.execute(
             select(SecretRef)
             .join(BindingSecretRef, BindingSecretRef.secret_ref_id == SecretRef.id)
             .where(BindingSecretRef.binding_id == binding.id)
         )
     ).scalars().all()
-    resolved_secrets = {item.secret_kind: secret_store.decrypt(item.encrypted_value) for item in secret_rows}
+    now = datetime.now(timezone.utc)
+    resolved_secrets: dict[str, str] = {}
+    for anchor in anchor_secret_rows:
+        latest_valid = (
+            await db.execute(
+                select(SecretRef)
+                .where(
+                    SecretRef.environment_id == anchor.environment_id,
+                    SecretRef.name == anchor.name,
+                    SecretRef.provider_key == anchor.provider_key,
+                    SecretRef.secret_kind == anchor.secret_kind,
+                    SecretRef.status == SecretStatus.ACTIVE,
+                    (SecretRef.expires_at.is_(None) | (SecretRef.expires_at > now)),
+                )
+                .order_by(
+                    SecretRef.is_active_version.desc(),
+                    SecretRef.version.desc(),
+                    SecretRef.updated_at.desc(),
+                )
+            )
+        ).scalars().first()
+        if latest_valid is not None:
+            resolved_secrets[latest_valid.secret_kind] = secret_store.decrypt(latest_valid.encrypted_value)
     return ResolvedBinding(
         environment_id=environment_id,
         project_id=project_id,

@@ -187,7 +187,11 @@ class SecretRefRead(EncodedModel):
     name: str
     provider_key: str
     secret_kind: str
+    version: int
+    is_active_version: bool
     status: str
+    rotated_at: datetime | None
+    expires_at: datetime | None
     last_four: str
     created_at: datetime
     updated_at: datetime

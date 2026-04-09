@@ -130,7 +130,15 @@ class CapabilityBinding(SQLModel, table=True):
 class SecretRef(SQLModel, table=True):
     __tablename__ = "postbase_secret_ref"
     __table_args__ = (
-        UniqueConstraint("environment_id", "name", name="uq_postbase_secret_ref_env_name"),
+        UniqueConstraint("environment_id", "name", "version", name="uq_postbase_secret_ref_env_name_version"),
+        Index(
+            "uq_postbase_secret_ref_active_version_per_name",
+            "environment_id",
+            "name",
+            unique=True,
+            sqlite_where=text("is_active_version = 1"),
+            postgresql_where=text("is_active_version = true"),
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -138,7 +146,11 @@ class SecretRef(SQLModel, table=True):
     name: str = Field(max_length=100)
     provider_key: str = Field(max_length=64)
     secret_kind: str = Field(max_length=64)
+    version: int = Field(default=1)
+    is_active_version: bool = Field(default=True)
     status: SecretStatus = Field(default=SecretStatus.ACTIVE)
+    rotated_at: datetime | None = Field(default=None)
+    expires_at: datetime | None = Field(default=None)
     last_four: str = Field(default="", max_length=4)
     encrypted_value: str = Field(default="")
     value_hash: str = Field(max_length=128)
