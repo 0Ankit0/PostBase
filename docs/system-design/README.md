@@ -35,7 +35,8 @@ Backend as a Service Platform/
 ├── infrastructure/
 │   ├── deployment-diagram.md
 │   ├── network-infrastructure.md
-│   └── cloud-architecture.md
+│   ├── cloud-architecture.md
+│   └── production-readiness-definition-of-done.md
 ├── edge-cases/
 │   ├── README.md
 │   ├── provider-selection-and-provisioning.md
