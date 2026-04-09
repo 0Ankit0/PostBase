@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timezone, datetime
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -99,6 +100,14 @@ LEGAL_BINDING_STATUS_TRANSITIONS: dict[BindingStatus, set[BindingStatus]] = {
         BindingStatus.DISABLED,
     },
 }
+ALLOWED_RETIREMENT_STRATEGIES = {"immediate", "deferred", "manual"}
+SWITCHOVER_PHASE_ORDER = [
+    "preflight",
+    "stage_target",
+    "validate_cutover",
+    "retire_old_binding",
+    "completed",
+]
 
 
 def _forbidden_role_payload(*, required_role: TenantRole) -> dict[str, str]:
@@ -935,7 +944,13 @@ async def create_switchover_plan(
     project: Project,
     environment: Environment,
     strategy: str,
+    retirement_strategy: str,
 ) -> SwitchoverPlan:
+    if retirement_strategy not in ALLOWED_RETIREMENT_STRATEGIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"retirement_strategy must be one of {sorted(ALLOWED_RETIREMENT_STRATEGIES)}",
+        )
     target_provider = (
         await db.execute(
             select(ProviderCatalogEntry).where(
@@ -960,20 +975,39 @@ async def create_switchover_plan(
         current_profile=current_profile,
         target_profile=target_profile,
     )
-    target_adapter = provider_registry.resolve(capability_key, target_provider_key)
-    target_health = await target_adapter.health()
-    if not target_health.ready:
+    preflight_report = await _build_switchover_preflight_report(
+        db,
+        binding=binding,
+        target_provider=target_provider,
+        environment=environment,
+    )
+    if not _preflight_is_ready(preflight_report):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Target provider is not ready: {target_health.detail}",
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "switchover_preflight_failed",
+                "message": "switchover_preflight_failed",
+                "preflight": preflight_report,
+            },
         )
 
     switchover = SwitchoverPlan(
         capability_binding_id=binding.id,
         target_provider_catalog_entry_id=target_provider.id,
         strategy=strategy,
+        retirement_strategy=retirement_strategy,
         status=SwitchoverStatus.PENDING,
-        execution_detail="plan created; awaiting execution",
+        execution_detail="phase:preflight; checkpoint:validated",
+        execution_state_json={
+            "phase": "preflight",
+            "completed_phases": [],
+            "preflight_report": preflight_report,
+            "rollback_checkpoint": {},
+            "retirement": {
+                "strategy": retirement_strategy,
+                "status": "pending",
+            },
+        },
         requested_by_user_id=actor.id,
     )
     db.add(switchover)
@@ -987,7 +1021,13 @@ async def create_switchover_plan(
         tenant_id=project.tenant_id,
         project_id=project.id,
         environment_id=environment.id,
-        payload={"binding_id": binding.id, "target_provider_key": target_provider_key, "strategy": strategy},
+        payload={
+            "binding_id": binding.id,
+            "target_provider_key": target_provider_key,
+            "strategy": strategy,
+            "retirement_strategy": retirement_strategy,
+            "preflight_report": preflight_report,
+        },
     )
     await db.commit()
     await db.refresh(switchover)
@@ -1005,26 +1045,138 @@ async def execute_switchover_plan(
     binding = await db.get(CapabilityBinding, switchover.capability_binding_id)
     if binding is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
-    if switchover.status != SwitchoverStatus.PENDING:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Switchover is not pending")
+    if switchover.status == SwitchoverStatus.COMPLETED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Switchover is already completed")
+    if switchover.status not in {SwitchoverStatus.PENDING, SwitchoverStatus.RUNNING, SwitchoverStatus.FAILED}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Switchover cannot be resumed")
 
-    previous_provider_catalog_entry_id = binding.provider_catalog_entry_id
-    switchover.status = SwitchoverStatus.RUNNING
-    switchover.execution_detail = "checkpoint:preflight_ok"
-    await db.flush()
-    try:
-        binding.provider_catalog_entry_id = switchover.target_provider_catalog_entry_id
+    execution_state: dict[str, Any] = dict(switchover.execution_state_json or {})
+    execution_state.setdefault("phase", "preflight")
+    execution_state.setdefault("completed_phases", [])
+    execution_state.setdefault("rollback_checkpoint", {})
+    execution_state.setdefault(
+        "retirement",
+        {"strategy": switchover.retirement_strategy, "status": "pending"},
+    )
+    completed_phases = set(execution_state["completed_phases"])
+
+    rollback_checkpoint = execution_state["rollback_checkpoint"]
+    if rollback_checkpoint.get("required") and rollback_checkpoint.get("previous_provider_catalog_entry_id") is not None:
+        binding.provider_catalog_entry_id = rollback_checkpoint["previous_provider_catalog_entry_id"]
         binding.status = BindingStatus.ACTIVE
-        binding.readiness_detail = "switchover executed"
+        binding.readiness_detail = "rollback checkpoint restored previous provider"
         binding.last_transition_actor_user_id = actor.id
-        binding.last_transition_reason = "switchover_executed"
+        binding.last_transition_reason = "switchover_checkpoint_rollback"
         binding.last_transition_at = datetime.now(timezone.utc)
         touch_updated_at(binding)
+        rollback_checkpoint["required"] = False
+        execution_state["phase"] = "preflight"
+        execution_state["completed_phases"] = [phase for phase in execution_state["completed_phases"] if phase != "stage_target"]
+        switchover.execution_state_json = execution_state
+        switchover.execution_detail = "checkpoint rollback restored; ready to resume"
+        switchover.status = SwitchoverStatus.RUNNING
+        await db.flush()
+
+    switchover.status = SwitchoverStatus.RUNNING
+    await db.flush()
+    try:
+        if "preflight" not in completed_phases:
+            target_provider = await db.get(ProviderCatalogEntry, switchover.target_provider_catalog_entry_id)
+            if target_provider is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target provider not found")
+            preflight_report = await _build_switchover_preflight_report(
+                db,
+                binding=binding,
+                target_provider=target_provider,
+                environment=environment,
+            )
+            if not _preflight_is_ready(preflight_report):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "switchover_preflight_failed",
+                        "message": "switchover_preflight_failed",
+                        "preflight": preflight_report,
+                    },
+                )
+            execution_state["preflight_report"] = preflight_report
+            execution_state["phase"] = "preflight"
+            execution_state["completed_phases"] = [*execution_state["completed_phases"], "preflight"]
+            switchover.execution_state_json = execution_state
+            switchover.execution_detail = "phase:preflight; checkpoint:validated"
+            await db.flush()
+
+        if "stage_target" not in set(execution_state["completed_phases"]):
+            execution_state["rollback_checkpoint"] = {
+                "required": True,
+                "previous_provider_catalog_entry_id": binding.provider_catalog_entry_id,
+            }
+            binding.provider_catalog_entry_id = switchover.target_provider_catalog_entry_id
+            binding.status = BindingStatus.PENDING_VALIDATION
+            binding.readiness_detail = "cutover staged on target provider"
+            binding.last_transition_actor_user_id = actor.id
+            binding.last_transition_reason = "switchover_stage_target"
+            binding.last_transition_at = datetime.now(timezone.utc)
+            touch_updated_at(binding)
+            execution_state["phase"] = "stage_target"
+            execution_state["completed_phases"] = [*execution_state["completed_phases"], "stage_target"]
+            switchover.execution_state_json = execution_state
+            switchover.execution_detail = "phase:stage_target; checkpoint:rollback_ready"
+            await db.flush()
+
+        if "validate_cutover" not in set(execution_state["completed_phases"]):
+            target_provider = await db.get(ProviderCatalogEntry, switchover.target_provider_catalog_entry_id)
+            capability_type = await db.get(CapabilityType, binding.capability_type_id)
+            if target_provider is None or capability_type is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target switchover references are missing")
+            target_adapter = provider_registry.resolve(CapabilityKey(capability_type.key), target_provider.provider_key)
+            target_health = await target_adapter.health()
+            if not target_health.ready:
+                raise RuntimeError(f"target provider health validation failed: {target_health.detail}")
+            binding.status = BindingStatus.ACTIVE
+            binding.readiness_detail = "switchover target validated"
+            binding.last_transition_actor_user_id = actor.id
+            binding.last_transition_reason = "switchover_validate_cutover"
+            binding.last_transition_at = datetime.now(timezone.utc)
+            touch_updated_at(binding)
+            execution_state["phase"] = "validate_cutover"
+            execution_state["completed_phases"] = [*execution_state["completed_phases"], "validate_cutover"]
+            switchover.execution_state_json = execution_state
+            switchover.execution_detail = "phase:validate_cutover; checkpoint:active_on_target"
+            await db.flush()
+
+        retirement = execution_state["retirement"]
+        retirement_strategy = retirement.get("strategy", switchover.retirement_strategy)
+        if "retire_old_binding" not in set(execution_state["completed_phases"]):
+            retirement_status = {
+                "immediate": "retired",
+                "deferred": "deferred",
+                "manual": "manual_action_required",
+            }.get(retirement_strategy, "manual_action_required")
+            retirement["status"] = retirement_status
+            execution_state["retirement"] = retirement
+            execution_state["phase"] = "retire_old_binding"
+            execution_state["completed_phases"] = [*execution_state["completed_phases"], "retire_old_binding"]
+            switchover.execution_state_json = execution_state
+            switchover.execution_detail = f"phase:retire_old_binding; strategy:{retirement_strategy}; status:{retirement_status}"
+            await db.flush()
+
+        execution_state["phase"] = "completed"
+        execution_state["completed_phases"] = SWITCHOVER_PHASE_ORDER[:-1]
+        execution_state["rollback_checkpoint"] = {
+            "required": False,
+            "previous_provider_catalog_entry_id": execution_state.get("rollback_checkpoint", {}).get("previous_provider_catalog_entry_id"),
+        }
+        switchover.execution_state_json = execution_state
         switchover.status = SwitchoverStatus.COMPLETED
-        switchover.execution_detail = "switchover executed successfully"
+        switchover.execution_detail = "switchover executed successfully with staged checkpoints"
         switchover.completed_at = datetime.now(timezone.utc)
         await db.flush()
     except Exception as exc:
+        previous_provider_catalog_entry_id = execution_state.get("rollback_checkpoint", {}).get(
+            "previous_provider_catalog_entry_id",
+            binding.provider_catalog_entry_id,
+        )
         binding.provider_catalog_entry_id = previous_provider_catalog_entry_id
         binding.status = BindingStatus.ACTIVE
         binding.readiness_detail = "switchover rollback to previous provider"
@@ -1032,6 +1184,13 @@ async def execute_switchover_plan(
         binding.last_transition_reason = "switchover_rollback"
         binding.last_transition_at = datetime.now(timezone.utc)
         touch_updated_at(binding)
+        execution_state["rollback_checkpoint"] = {
+            "required": False,
+            "previous_provider_catalog_entry_id": previous_provider_catalog_entry_id,
+        }
+        execution_state["phase"] = "rollback_complete"
+        execution_state["last_error"] = str(exc)
+        switchover.execution_state_json = execution_state
         switchover.status = SwitchoverStatus.FAILED
         switchover.execution_detail = f"rollback_complete:{exc}"
         switchover.completed_at = datetime.now(timezone.utc)
@@ -1059,7 +1218,12 @@ async def execute_switchover_plan(
         tenant_id=project.tenant_id,
         project_id=project.id,
         environment_id=environment.id,
-        payload={"binding_id": binding.id, "strategy": switchover.strategy},
+        payload={
+            "binding_id": binding.id,
+            "strategy": switchover.strategy,
+            "retirement_strategy": switchover.retirement_strategy,
+            "execution_phase": (switchover.execution_state_json or {}).get("phase", "completed"),
+        },
     )
     await db.commit()
     await db.refresh(switchover)
@@ -1586,3 +1750,86 @@ def _validate_switchover_profiles(
                 f"'{current_profile.provider_key}'. Missing: {', '.join(missing)}"
             ),
         )
+
+
+def _is_region_compatible(
+    *,
+    supported_regions: list[str],
+    requested_region: str | None,
+    environment_region_preference: str | None,
+) -> tuple[bool, str]:
+    region_to_validate = requested_region or environment_region_preference
+    supported = set(supported_regions)
+    if not region_to_validate:
+        return True, "no region preference defined"
+    if "global" in supported or region_to_validate in supported:
+        return True, f"region '{region_to_validate}' is supported"
+    return False, f"region '{region_to_validate}' is not in target supported regions: {sorted(supported)}"
+
+
+async def _build_switchover_preflight_report(
+    db: AsyncSession,
+    *,
+    binding: CapabilityBinding,
+    target_provider: ProviderCatalogEntry,
+    environment: Environment,
+) -> dict[str, Any]:
+    current_provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
+    if current_provider is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Current provider not found")
+    capability_type = await db.get(CapabilityType, binding.capability_type_id)
+    if capability_type is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Capability not found")
+    capability_key = CapabilityKey(capability_type.key)
+    current_profile, target_profile = _load_provider_profiles(
+        capability_key=capability_key,
+        current_provider_key=current_provider.provider_key,
+        target_provider_key=target_provider.provider_key,
+    )
+    current_health = await provider_registry.resolve(capability_key, current_profile.provider_key).health()
+    target_health = await provider_registry.resolve(capability_key, target_profile.provider_key).health()
+    missing_secret_kinds, _ = await _required_secret_validation_detail(
+        db,
+        binding_id=binding.id,
+        provider=target_provider,
+    )
+    region_ok, region_detail = _is_region_compatible(
+        supported_regions=target_profile.supported_regions,
+        requested_region=binding.region,
+        environment_region_preference=environment.region_preference,
+    )
+    blocking_statuses = {MigrationStatus.PENDING, MigrationStatus.QUEUED, MigrationStatus.FAILED}
+    unresolved_migrations = (
+        await db.execute(
+            select(SchemaMigration).where(
+                SchemaMigration.environment_id == environment.id,
+                SchemaMigration.status.in_(blocking_statuses),
+            )
+        )
+    ).scalars().all()
+    migration_ready = len(unresolved_migrations) == 0
+    return {
+        "health": {
+            "ok": current_health.ready and target_health.ready,
+            "current_provider_ready": current_health.ready,
+            "target_provider_ready": target_health.ready,
+            "detail": f"current={current_health.detail}; target={target_health.detail}",
+        },
+        "secrets": {
+            "ok": len(missing_secret_kinds) == 0,
+            "missing_secret_kinds": missing_secret_kinds,
+        },
+        "region_compatibility": {
+            "ok": region_ok,
+            "detail": region_detail,
+            "target_supported_regions": target_profile.supported_regions,
+        },
+        "migration_readiness": {
+            "ok": migration_ready,
+            "blocking_migrations": [item.version for item in unresolved_migrations],
+        },
+    }
+
+
+def _preflight_is_ready(preflight_report: dict[str, Any]) -> bool:
+    return all(item.get("ok") for item in preflight_report.values() if isinstance(item, dict))

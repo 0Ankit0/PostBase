@@ -6,9 +6,16 @@ from sqlmodel import select
 
 from src.apps.iam.models.user import User
 from src.apps.multitenancy.models.tenant import Tenant, TenantMember, TenantRole
-from src.apps.iam.utils.hashid import encode_id
-from src.postbase.domain.enums import BindingStatus, MigrationStatus
-from src.postbase.domain.models import CapabilityBinding, DataNamespace, SchemaMigration, SchemaMigrationExecution, TableDefinition
+from src.apps.iam.utils.hashid import decode_id_or_404, encode_id
+from src.postbase.domain.enums import BindingStatus, MigrationStatus, SwitchoverStatus
+from src.postbase.domain.models import (
+    CapabilityBinding,
+    DataNamespace,
+    SchemaMigration,
+    SchemaMigrationExecution,
+    SwitchoverPlan,
+    TableDefinition,
+)
 
 
 @pytest.mark.asyncio
@@ -1271,3 +1278,149 @@ async def test_binding_status_transition_uniqueness_and_audit_metadata(client, d
     payload = disabled_response.json()
     assert payload["last_transition_reason"] == "temporary shutdown"
     assert payload["last_transition_actor_user_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_switchover_cutover_records_execution_state_and_retirement_strategy(client, db_session):
+    signup_response = await client.post(
+        "/api/v1/auth/signup/?set_cookie=false",
+        json={
+            "username": "switchover_owner_a",
+            "email": "switchover_a@example.com",
+            "password": "OwnerPass123!",
+            "confirm_password": "OwnerPass123!",
+        },
+    )
+    assert signup_response.status_code == 200, signup_response.text
+    owner_headers = {"Authorization": f"Bearer {signup_response.json()['access']}"}
+    owner = (await db_session.execute(select(User).where(User.email == "switchover_a@example.com"))).scalars().first()
+    tenant = Tenant(name="Sigma", slug="sigma", description="Sigma tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+
+    project_response = await client.post(
+        "/api/v1/projects",
+        headers=owner_headers,
+        json={"tenant_id": encode_id(tenant.id), "name": "Switch", "slug": "switch", "description": "Switch project"},
+    )
+    assert project_response.status_code == 201, project_response.text
+    environment_response = await client.post(
+        f"/api/v1/projects/{project_response.json()['id']}/environments",
+        headers=owner_headers,
+        json={"name": "Prod", "slug": "prod-switch", "stage": "production"},
+    )
+    assert environment_response.status_code == 201, environment_response.text
+    environment_id = environment_response.json()["id"]
+
+    bindings_response = await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)
+    assert bindings_response.status_code == 200, bindings_response.text
+    storage_binding = next(item for item in bindings_response.json() if item["capability_key"] == "storage")
+
+    plan_response = await client.post(
+        f"/api/v1/bindings/{storage_binding['id']}/switchovers",
+        headers=owner_headers,
+        json={
+            "target_provider_key": "s3-compatible",
+            "strategy": "cutover",
+            "retirement_strategy": "immediate",
+        },
+    )
+    assert plan_response.status_code == 200, plan_response.text
+
+    execute_response = await client.post(
+        f"/api/v1/switchovers/{plan_response.json()['id']}/execute",
+        headers=owner_headers,
+    )
+    assert execute_response.status_code == 200, execute_response.text
+    payload = execute_response.json()
+    assert payload["status"] == "completed"
+    assert payload["retirement_strategy"] == "immediate"
+    assert payload["execution_state_json"]["phase"] == "completed"
+    assert payload["execution_state_json"]["retirement"]["status"] == "retired"
+    assert payload["execution_state_json"]["completed_phases"] == [
+        "preflight",
+        "stage_target",
+        "validate_cutover",
+        "retire_old_binding",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_switchover_resume_after_failure_restores_from_rollback_checkpoint(client, db_session):
+    signup_response = await client.post(
+        "/api/v1/auth/signup/?set_cookie=false",
+        json={
+            "username": "switchover_owner_b",
+            "email": "switchover_b@example.com",
+            "password": "OwnerPass123!",
+            "confirm_password": "OwnerPass123!",
+        },
+    )
+    assert signup_response.status_code == 200, signup_response.text
+    owner_headers = {"Authorization": f"Bearer {signup_response.json()['access']}"}
+    owner = (await db_session.execute(select(User).where(User.email == "switchover_b@example.com"))).scalars().first()
+    tenant = Tenant(name="Omega", slug="omega", description="Omega tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+
+    project_response = await client.post(
+        "/api/v1/projects",
+        headers=owner_headers,
+        json={"tenant_id": encode_id(tenant.id), "name": "Resume", "slug": "resume", "description": "Resume project"},
+    )
+    assert project_response.status_code == 201, project_response.text
+    environment_response = await client.post(
+        f"/api/v1/projects/{project_response.json()['id']}/environments",
+        headers=owner_headers,
+        json={"name": "Prod", "slug": "prod-resume", "stage": "production"},
+    )
+    assert environment_response.status_code == 201, environment_response.text
+    environment_id = environment_response.json()["id"]
+    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()
+    storage_binding = next(item for item in binding_rows if item["capability_key"] == "storage")
+
+    plan_response = await client.post(
+        f"/api/v1/bindings/{storage_binding['id']}/switchovers",
+        headers=owner_headers,
+        json={
+            "target_provider_key": "s3-compatible",
+            "strategy": "cutover",
+            "retirement_strategy": "deferred",
+        },
+    )
+    assert plan_response.status_code == 200, plan_response.text
+    switchover_db_id = decode_id_or_404(plan_response.json()["id"])
+    binding_db_id = decode_id_or_404(storage_binding["id"])
+    switchover_row = await db_session.get(SwitchoverPlan, switchover_db_id)
+    binding_row = await db_session.get(CapabilityBinding, binding_db_id)
+    assert switchover_row is not None
+    assert binding_row is not None
+    previous_provider = binding_row.provider_catalog_entry_id
+    binding_row.provider_catalog_entry_id = switchover_row.target_provider_catalog_entry_id
+    binding_row.status = BindingStatus.PENDING_VALIDATION
+    switchover_row.status = SwitchoverStatus.FAILED
+    switchover_row.execution_state_json = {
+        "phase": "stage_target",
+        "completed_phases": ["preflight", "stage_target"],
+        "rollback_checkpoint": {
+            "required": True,
+            "previous_provider_catalog_entry_id": previous_provider,
+        },
+        "retirement": {"strategy": "deferred", "status": "pending"},
+    }
+    await db_session.commit()
+
+    execute_response = await client.post(
+        f"/api/v1/switchovers/{plan_response.json()['id']}/execute",
+        headers=owner_headers,
+    )
+    assert execute_response.status_code == 200, execute_response.text
+    payload = execute_response.json()
+    assert payload["status"] == "completed"
+    assert payload["execution_state_json"]["phase"] == "completed"
+    assert payload["execution_state_json"]["retirement"]["status"] == "deferred"
+    assert payload["execution_state_json"]["rollback_checkpoint"]["required"] is False
