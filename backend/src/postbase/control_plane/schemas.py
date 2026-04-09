@@ -288,6 +288,11 @@ class MigrationRead(EncodedModel):
     version: str
     status: MigrationStatus
     reconciliation_status: str
+    drift_severity: str
+    affected_entities: list[str]
+    reconcile_attempt_count: int
+    reconcile_error_text: str
+    last_reconciled_at: datetime | None
     applied_sql: str
     created_at: datetime
 
@@ -333,6 +338,7 @@ class EnvironmentOverviewRead(BaseModel):
     degraded_bindings: int
     recent_switchovers: int
     pending_migrations: int
+    drifted_migrations: int
     secret_count: int
     key_count: int
     usage_points_total: float
