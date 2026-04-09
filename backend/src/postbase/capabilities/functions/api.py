@@ -33,10 +33,19 @@ async def invoke_function(
     function_id: int,
     payload: FunctionInvokeRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    correlation_id: str | None = Header(default=None, alias="X-Correlation-Id"),
+    retry_of_execution_id: int | None = Header(default=None, alias="X-Retry-Of-Execution-Id"),
     context=Depends(get_access_context),
     provider=Depends(get_functions_provider),
 ) -> ExecutionRead:
-    return await provider.invoke(context, function_id, payload, idempotency_key=idempotency_key)
+    return await provider.invoke(
+        context,
+        function_id,
+        payload,
+        idempotency_key=idempotency_key,
+        correlation_id=correlation_id,
+        retry_of_execution_id=retry_of_execution_id,
+    )
 
 
 @router.get("/{function_id}/executions", response_model=list[ExecutionRead])

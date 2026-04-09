@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from src.apps.core.config import settings
 from src.postbase.capabilities.functions.contracts import (
     ExecutionRead,
     FunctionCreateRequest,
@@ -83,6 +85,8 @@ class InlineRuntimeFunctionsProvider:
         function_id: int,
         payload: FunctionInvokeRequest,
         idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        retry_of_execution_id: int | None = None,
     ) -> ExecutionRead:
         if payload.invocation_type != "sync":
             raise HTTPException(
@@ -93,6 +97,9 @@ class InlineRuntimeFunctionsProvider:
         function = await db.get(FunctionDefinition, function_id)
         if function is None or function.environment_id != context.environment_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Function not found")
+        now = datetime.now(timezone.utc)
+        replay_window_start = now - timedelta(seconds=settings.POSTBASE_IDEMPOTENCY_REPLAY_WINDOW_SECONDS)
+        resolved_correlation_id = correlation_id or str(uuid4())
         if idempotency_key:
             existing = (
                 await db.execute(
@@ -100,45 +107,102 @@ class InlineRuntimeFunctionsProvider:
                         ExecutionRecord.environment_id == context.environment_id,
                         ExecutionRecord.function_definition_id == function.id,
                         ExecutionRecord.idempotency_key == idempotency_key,
-                    )
+                        ExecutionRecord.started_at >= replay_window_start,
+                    ).order_by(ExecutionRecord.started_at.desc())
                 )
             ).scalars().first()
             if existing is not None:
-                replay = ExecutionRecord(
-                    function_definition_id=function.id,
-                    environment_id=context.environment_id,
-                    invocation_type=payload.invocation_type,
-                    idempotency_key=idempotency_key,
-                    replay_of_execution_id=existing.id,
-                    retry_count=existing.retry_count,
-                    status=existing.status,
-                    input_json=payload.payload,
-                    output_json=existing.output_json,
-                    error_text=existing.error_text,
-                    log_excerpt="idempotency replay",
-                    completed_at=datetime.now(timezone.utc),
-                )
-                db.add(replay)
-                await db.flush()
-                await db.commit()
-                return self._execution_read(replay)
+                return self._execution_read(existing)
+        if payload.cancel_requested:
+            canceled = ExecutionRecord(
+                function_definition_id=function.id,
+                environment_id=context.environment_id,
+                invocation_type=payload.invocation_type,
+                idempotency_key=idempotency_key,
+                correlation_id=resolved_correlation_id,
+                retry_of_execution_id=retry_of_execution_id,
+                retry_count=0,
+                timeout_ms=payload.timeout_ms,
+                cancel_requested=True,
+                status="canceled",
+                input_json=payload.payload,
+                output_json={},
+                log_excerpt="inline invocation canceled before execution",
+                completed_at=now,
+            )
+            db.add(canceled)
+            await db.flush()
+            await db.commit()
+            return self._execution_read(canceled)
         if function.handler_type == "echo":
             output = {"echo": payload.payload, "provider": "inline-runtime"}
         elif function.handler_type == "template":
             output = {"message": function.config_json.get("template", "ok"), "provider": "inline-runtime"}
         else:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported handler type")
+        if payload.timeout_ms is not None:
+            simulated_duration = int(payload.payload.get("simulate_duration_ms", 0))
+            if simulated_duration > payload.timeout_ms:
+                timeout_execution = ExecutionRecord(
+                    function_definition_id=function.id,
+                    environment_id=context.environment_id,
+                    invocation_type=payload.invocation_type,
+                    idempotency_key=idempotency_key,
+                    correlation_id=resolved_correlation_id,
+                    retry_of_execution_id=retry_of_execution_id,
+                    retry_count=0,
+                    timeout_ms=payload.timeout_ms,
+                    cancel_requested=payload.cancel_requested,
+                    status="timed_out",
+                    input_json=payload.payload,
+                    output_json={},
+                    error_text="inline adapter timeout exceeded",
+                    log_excerpt="inline adapter timeout",
+                    completed_at=now,
+                )
+                db.add(timeout_execution)
+                await db.flush()
+                recovery_retries = min(settings.POSTBASE_FUNCTION_TIMEOUT_RECOVERY_RETRIES, 1)
+                if recovery_retries > 0:
+                    recovered_output = {**output, "timeout_recovered": True}
+                    recovered_execution = ExecutionRecord(
+                        function_definition_id=function.id,
+                        environment_id=context.environment_id,
+                        invocation_type=payload.invocation_type,
+                        idempotency_key=idempotency_key,
+                        correlation_id=resolved_correlation_id,
+                        replay_of_execution_id=timeout_execution.id,
+                        retry_of_execution_id=timeout_execution.id,
+                        retry_count=timeout_execution.retry_count + 1,
+                        timeout_ms=payload.timeout_ms,
+                        cancel_requested=payload.cancel_requested,
+                        status="completed",
+                        input_json=payload.payload,
+                        output_json=recovered_output,
+                        log_excerpt="inline adapter timeout recovery succeeded",
+                        completed_at=now,
+                    )
+                    db.add(recovered_execution)
+                    await db.flush()
+                    await db.commit()
+                    return self._execution_read(recovered_execution)
+                await db.commit()
+                return self._execution_read(timeout_execution)
         execution = ExecutionRecord(
             function_definition_id=function.id,
             environment_id=context.environment_id,
             invocation_type=payload.invocation_type,
             idempotency_key=idempotency_key,
+            correlation_id=resolved_correlation_id,
+            retry_of_execution_id=retry_of_execution_id,
             retry_count=0,
+            timeout_ms=payload.timeout_ms,
+            cancel_requested=payload.cancel_requested,
             status="completed",
             input_json=payload.payload,
             output_json=output,
             log_excerpt="inline invocation completed",
-            completed_at=datetime.now(timezone.utc),
+            completed_at=now,
         )
         db.add(execution)
         await db.flush()
@@ -186,8 +250,12 @@ class InlineRuntimeFunctionsProvider:
             function_definition_id=row.function_definition_id,
             invocation_type=row.invocation_type,
             idempotency_key=row.idempotency_key,
+            correlation_id=row.correlation_id,
             replay_of_execution_id=row.replay_of_execution_id,
+            retry_of_execution_id=row.retry_of_execution_id,
             retry_count=row.retry_count,
+            timeout_ms=row.timeout_ms,
+            cancel_requested=row.cancel_requested,
             status=row.status,
             input_json=row.input_json,
             output_json=row.output_json,

@@ -27,6 +27,8 @@ class FunctionRead(BaseModel):
 class FunctionInvokeRequest(BaseModel):
     payload: dict[str, Any] = {}
     invocation_type: str = "sync"
+    timeout_ms: int | None = None
+    cancel_requested: bool = False
 
 
 class ExecutionRead(BaseModel):
@@ -34,8 +36,12 @@ class ExecutionRead(BaseModel):
     function_definition_id: int
     invocation_type: str
     idempotency_key: str | None
+    correlation_id: str
     replay_of_execution_id: int | None
+    retry_of_execution_id: int | None
     retry_count: int
+    timeout_ms: int | None
+    cancel_requested: bool
     status: str
     input_json: dict[str, Any]
     output_json: dict[str, Any]
@@ -58,6 +64,8 @@ class FunctionsProvider(Protocol):
         function_id: int,
         payload: FunctionInvokeRequest,
         idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        retry_of_execution_id: int | None = None,
     ) -> ExecutionRead:
         ...
 
