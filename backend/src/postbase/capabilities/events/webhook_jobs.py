@@ -5,8 +5,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from src.apps.core.config import settings
 from src.postbase.capabilities.events.webhook_delivery import deliver_webhook
-from src.postbase.domain.models import DeadLetterWebhookDelivery, DeliveryRecord, WebhookDeliveryJob
+from src.postbase.domain.models import (
+    DeadLetterWebhookDelivery,
+    DeliveryRecord,
+    EventChannel,
+    WebhookDeliveryJob,
+)
+from src.postbase.platform.usage import record_usage
 
 
 def _next_attempt_time(attempt_count: int) -> datetime:
@@ -25,6 +32,7 @@ async def enqueue_webhook_job(
     target_ref: str,
     max_attempts: int = 3,
 ) -> WebhookDeliveryJob:
+    bounded_attempts = max(1, min(max_attempts, settings.POSTBASE_WEBHOOK_RETRY_CEILING))
     job = WebhookDeliveryJob(
         channel_id=channel_id,
         subscription_id=subscription_id,
@@ -32,7 +40,7 @@ async def enqueue_webhook_job(
         payload_json=payload_json,
         target_ref=target_ref,
         status="pending",
-        max_attempts=max_attempts,
+        max_attempts=bounded_attempts,
         next_attempt_at=datetime.now(timezone.utc),
     )
     db.add(job)
@@ -64,13 +72,18 @@ async def process_due_webhook_jobs(
     ).scalars().all()
 
     delivery_records: list[DeliveryRecord] = []
+    batch_failures = 0
+    channel_environment_ids: dict[int, int] = {}
 
     for job in jobs:
+        if batch_failures >= settings.POSTBASE_WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+            break
         result = await deliver_webhook(
             target_ref=job.target_ref,
             event_name=job.event_name,
             payload=job.payload_json,
             attempt_number=job.attempt_count + 1,
+            timeout_ms=settings.POSTBASE_WEBHOOK_TIMEOUT_MS,
         )
         job.attempt_count += 1
         job.error_text = result.error_text
@@ -88,14 +101,27 @@ async def process_due_webhook_jobs(
         ]
         job.updated_at = now
 
+        metric_environment_id = await _resolve_metric_environment_id_cached(
+            db,
+            channel_id=job.channel_id,
+            cache=channel_environment_ids,
+        )
         if result.status == "delivered":
+            batch_failures = 0
             job.status = "delivered"
             job.delivered_at = now
             job.next_attempt_at = None
             delivery_status = "delivered"
             delivered_at = now
             error_text = ""
+            await record_usage(
+                db,
+                environment_id=metric_environment_id,
+                capability_key="events",
+                metric_key="webhook_delivery_success_total",
+            )
         elif job.attempt_count >= job.max_attempts:
+            batch_failures += 1
             job.status = "dead_lettered"
             job.next_attempt_at = None
             db.add(
@@ -117,12 +143,33 @@ async def process_due_webhook_jobs(
             delivery_status = "failed"
             delivered_at = None
             error_text = result.error_text or "webhook delivery failed after retries"
+            await record_usage(
+                db,
+                environment_id=metric_environment_id,
+                capability_key="events",
+                metric_key="webhook_delivery_failed_total",
+            )
         else:
+            batch_failures += 1
             job.status = "retrying"
             job.next_attempt_at = _next_attempt_time(job.attempt_count)
             delivery_status = "retrying"
             delivered_at = None
             error_text = result.error_text or "webhook delivery retry scheduled"
+            await record_usage(
+                db,
+                environment_id=metric_environment_id,
+                capability_key="events",
+                metric_key="webhook_delivery_retry_total",
+            )
+
+        if result.response_code == 401:
+            await record_usage(
+                db,
+                environment_id=metric_environment_id,
+                capability_key="events",
+                metric_key="webhook_auth_anomaly_total",
+            )
 
         record = DeliveryRecord(
             channel_id=job.channel_id,
@@ -138,6 +185,7 @@ async def process_due_webhook_jobs(
         delivery_records.append(record)
 
     await db.flush()
+    await _record_queue_health_signals(db, channel_id=channel_id)
     return delivery_records
 
 
@@ -167,3 +215,60 @@ async def replay_dead_letter_webhook_jobs(
         dead_letter.replayed_at = now
     await db.flush()
     return dead_letters
+
+
+async def _record_queue_health_signals(db: AsyncSession, *, channel_id: int | None) -> None:
+    pending_filters = [WebhookDeliveryJob.status.in_(["pending", "retrying"])]
+    failed_filters = [WebhookDeliveryJob.status == "dead_lettered"]
+    if channel_id is not None:
+        pending_filters.append(WebhookDeliveryJob.channel_id == channel_id)
+        failed_filters.append(WebhookDeliveryJob.channel_id == channel_id)
+
+    pending_jobs = (
+        await db.execute(select(WebhookDeliveryJob).where(*pending_filters))
+    ).scalars().all()
+    failed_jobs = (
+        await db.execute(select(WebhookDeliveryJob).where(*failed_filters))
+    ).scalars().all()
+    backlog_size = len(pending_jobs)
+    failed_size = len(failed_jobs)
+
+    metric_scope_id = await _resolve_metric_environment_id(db, channel_id=channel_id)
+    if backlog_size >= settings.POSTBASE_WEBHOOK_BACKLOG_ALERT_THRESHOLD:
+        await record_usage(
+            db,
+            environment_id=metric_scope_id,
+            capability_key="events",
+            metric_key="webhook_backlog_alert_total",
+        )
+    if failed_size >= settings.POSTBASE_WEBHOOK_DELIVERY_FAILURE_ALERT_THRESHOLD:
+        await record_usage(
+            db,
+            environment_id=metric_scope_id,
+            capability_key="events",
+            metric_key="webhook_delivery_failure_alert_total",
+        )
+
+
+async def _resolve_metric_environment_id(db: AsyncSession, *, channel_id: int | None) -> int:
+    if channel_id is None:
+        first_channel = (await db.execute(select(EventChannel).limit(1))).scalars().first()
+        return first_channel.environment_id if first_channel else 1
+    channel = await db.get(EventChannel, channel_id)
+    if channel is not None:
+        return channel.environment_id
+    first_channel = (await db.execute(select(EventChannel).limit(1))).scalars().first()
+    return first_channel.environment_id if first_channel else 1
+
+
+async def _resolve_metric_environment_id_cached(
+    db: AsyncSession,
+    *,
+    channel_id: int,
+    cache: dict[int, int],
+) -> int:
+    if channel_id in cache:
+        return cache[channel_id]
+    value = await _resolve_metric_environment_id(db, channel_id=channel_id)
+    cache[channel_id] = value
+    return value

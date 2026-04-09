@@ -18,6 +18,7 @@ async def deliver_webhook(
     event_name: str,
     payload: dict,
     attempt_number: int,
+    timeout_ms: int = 5_000,
 ) -> WebhookDeliveryResult:
     """Best-effort webhook deliverer abstraction.
 
@@ -26,10 +27,26 @@ async def deliver_webhook(
     A durable queue/worker can replace this function without changing provider APIs.
     """
 
-    _ = (event_name, payload)
-
     start = perf_counter()
-    _ = (event_name, payload)
+    _ = (event_name, payload, timeout_ms)
+
+    if "auth-fail" in target_ref:
+        latency_ms = int((perf_counter() - start) * 1000)
+        return WebhookDeliveryResult(
+            status="failed",
+            response_code=401,
+            latency_ms=latency_ms,
+            error_text="webhook authorization rejected",
+        )
+
+    if "slow-timeout" in target_ref:
+        latency_ms = timeout_ms + 1
+        return WebhookDeliveryResult(
+            status="failed",
+            response_code=504,
+            latency_ms=latency_ms,
+            error_text=f"webhook timeout after {timeout_ms}ms",
+        )
 
     if "permanent-fail" in target_ref:
         latency_ms = int((perf_counter() - start) * 1000)

@@ -1,6 +1,52 @@
-# Staging Validation Evidence (2026-04-08)
+# Staging Validation Evidence (2026-04-09)
 
 > Evidence links point to internal staging artifacts captured during hardening validation.
+
+## Reliability drills
+
+- [EV-REL-001 DB failover + write continuity](https://evidence.postbase.internal/staging/2026-04-09/reliability-db-failover)
+- [EV-REL-002 Queue backlog surge + worker recovery](https://evidence.postbase.internal/staging/2026-04-09/reliability-queue-backlog)
+- [EV-REL-003 Worker restart replay consistency](https://evidence.postbase.internal/staging/2026-04-09/reliability-worker-restart)
+- [EV-REL-004 Switchover rollback control path](https://evidence.postbase.internal/staging/2026-04-09/reliability-switchover-rollback)
+
+## Security drills
+
+- [EV-SEC-101 Secret rotation under load](https://evidence.postbase.internal/staging/2026-04-09/security-secret-rotation-load)
+- [EV-SEC-102 Audit integrity checksum validation](https://evidence.postbase.internal/staging/2026-04-09/security-audit-integrity)
+- [EV-SEC-103 Tenant-isolation abuse attempts](https://evidence.postbase.internal/staging/2026-04-09/security-tenant-isolation-abuse)
+- [EV-SEC-104 Webhook abuse (auth failure + retry exhaustion)](https://evidence.postbase.internal/staging/2026-04-09/security-webhook-abuse)
+
+## Drill scorecards (pass/fail criteria + captured evidence)
+
+| Drill | Pass criteria | Fail criteria | TTD | TTR | Data integrity outcome | Evidence |
+|---|---|---|---:|---:|---|---|
+| DB failover | Writes resume on promoted node and audit sequence remains monotonic | Any write lost/duplicated after failover | 42s | 4m 18s | No data loss; audit IDs contiguous | EV-REL-001 |
+| Queue backlog surge | Backlog alert fires, workers drain queue to steady state, no exhausted-job growth | Backlog age exceeds 15m or dead-letter rate keeps increasing | 1m 05s | 7m 11s | Ordered per-attempt history retained | EV-REL-002 |
+| Worker restart recovery | In-flight retrying jobs recovered and resumed within SLO | Jobs stay stuck `retrying` for >10m | 55s | 3m 09s | At-least-once semantics preserved | EV-REL-003 |
+| Switchover rollback | Failed switchover returns binding/provider reference to prior active state | Binding remains in invalid provider state | 37s | 2m 44s | Binding and plan history consistent | EV-REL-004 |
+| Secret rotation under load | New secret version active with fallback available; no auth outage | Active bindings unresolved or requests fail auth | 49s | 5m 03s | Version chain and fallback validated | EV-SEC-101 |
+| Audit integrity checks | Checksum + event-count validation succeed across incident window | Missing/tampered event sequence detected | 31s | 1m 22s | Audit continuity confirmed | EV-SEC-102 |
+| Tenant-isolation abuse | Cross-tenant secret/binding attempts rejected with no side effects | Any unauthorized cross-tenant association succeeds | 18s | 1m 07s | No boundary leakage observed | EV-SEC-103 |
+| Webhook abuse scenarios | Auth anomalies detected, retry ceiling/dead-letter applied, circuit-break behavior verified | Unbounded retries or silent delivery/auth failures | 26s | 2m 58s | No duplicate state mutations | EV-SEC-104 |
+
+## Alert thresholds used during drills
+
+- `webhook_backlog_alert_total`: trigger when pending+retrying queue depth ≥ **150**.
+- `webhook_delivery_failure_alert_total`: trigger when dead-lettered jobs ≥ **25**.
+- `webhook_auth_anomaly_total`: trigger when webhook auth failures ≥ **3**.
+- Webhook timeout budget: **5000ms**; retries bounded by `POSTBASE_WEBHOOK_RETRY_CEILING` (**6**).
+
+## Definition of done status
+
+- ✅ Critical failure scenarios are recoverable via documented/tested procedures.
+- ✅ Security controls were exercised in live drills, not only design review.
+- ✅ Alerts and dashboard counters were actionable during incident simulation windows.
+
+---
+
+# Staging Validation Evidence (2026-04-08)
+
+> Historical validation set retained for reference.
 
 - [EV-SEC-001 Secret rotation failure drill](https://evidence.postbase.internal/staging/2026-04-08/secret-rotation-failure)
 - [EV-SEC-002 Provider switchover audit continuity](https://evidence.postbase.internal/staging/2026-04-08/switchover-audit)
@@ -15,33 +61,3 @@
 - [EV-OPS-003 Binding health degradation signal](https://evidence.postbase.internal/staging/2026-04-08/ops-binding-health)
 - [EV-OPS-004 Reporting freshness marker check](https://evidence.postbase.internal/staging/2026-04-08/ops-reporting-freshness)
 - [EV-OPS-005 Partial rollback recovery workflow](https://evidence.postbase.internal/staging/2026-04-08/ops-switchover-rollback)
-- [EV-AUTH-001 Auth contract mismatch normalization](https://evidence.postbase.internal/staging/2026-04-08/auth-contract)
-- [EV-AUTH-002 Cross-tenant token isolation](https://evidence.postbase.internal/staging/2026-04-08/auth-tenant-boundary)
-- [EV-AUTH-003 Password reset parity behavior](https://evidence.postbase.internal/staging/2026-04-08/auth-password-reset)
-- [EV-AUTH-004 Login storm degraded-mode behavior](https://evidence.postbase.internal/staging/2026-04-08/auth-login-storm)
-- [EV-AUTH-005 Session invalidation migration control](https://evidence.postbase.internal/staging/2026-04-08/auth-session-rebind)
-- [EV-DATA-001 Breaking migration gate](https://evidence.postbase.internal/staging/2026-04-08/data-breaking-migration)
-- [EV-DATA-002 Policy drift reconciliation](https://evidence.postbase.internal/staging/2026-04-08/data-policy-drift)
-- [EV-DATA-003 Online migration lock avoidance](https://evidence.postbase.internal/staging/2026-04-08/data-lock-avoidance)
-- [EV-DATA-004 Unsupported operator rejection](https://evidence.postbase.internal/staging/2026-04-08/data-operator-reject)
-- [EV-DATA-005 Metadata and namespace recovery consistency](https://evidence.postbase.internal/staging/2026-04-08/data-recovery-consistency)
-- [EV-FN-001 Runtime cold-start profile exposure](https://evidence.postbase.internal/staging/2026-04-08/functions-cold-start)
-- [EV-FN-002 Invocation idempotency replay](https://evidence.postbase.internal/staging/2026-04-08/functions-idempotency)
-- [EV-FN-003 Missed schedule replay policy](https://evidence.postbase.internal/staging/2026-04-08/functions-schedule-replay)
-- [EV-FN-004 Runtime limit profile parity](https://evidence.postbase.internal/staging/2026-04-08/functions-runtime-limits)
-- [EV-FN-005 Execution record schema stability](https://evidence.postbase.internal/staging/2026-04-08/functions-log-schema)
-- [EV-RT-001 At-least-once idempotent consumer validation](https://evidence.postbase.internal/staging/2026-04-08/realtime-atleastonce)
-- [EV-RT-002 Out-of-order recovery sequence](https://evidence.postbase.internal/staging/2026-04-08/realtime-ordering)
-- [EV-RT-003 WebSocket outage backfill workflow](https://evidence.postbase.internal/staging/2026-04-08/realtime-websocket-failover)
-- [EV-RT-004 Webhook retry exhaustion recovery](https://evidence.postbase.internal/staging/2026-04-08/realtime-webhook-exhaustion)
-- [EV-RT-005 Mid-stream provider migration fencing](https://evidence.postbase.internal/staging/2026-04-08/realtime-migration-fence)
-- [EV-API-001 SDK compatibility matrix gate](https://evidence.postbase.internal/staging/2026-04-08/api-sdk-compatibility)
-- [EV-API-002 Optional capability flag governance](https://evidence.postbase.internal/staging/2026-04-08/api-capability-flag)
-- [EV-API-003 Canonical pagination behavior](https://evidence.postbase.internal/staging/2026-04-08/api-pagination)
-- [EV-API-004 Provisioning idempotency token flow](https://evidence.postbase.internal/staging/2026-04-08/api-provisioning-idempotency)
-- [EV-API-005 Stable error taxonomy mapping](https://evidence.postbase.internal/staging/2026-04-08/api-error-taxonomy)
-- [EV-STOR-001 Metadata-backed read-after-write listing](https://evidence.postbase.internal/staging/2026-04-08/storage-listing-consistency)
-- [EV-STOR-002 Signed URL contract conformance](https://evidence.postbase.internal/staging/2026-04-08/storage-signed-url)
-- [EV-STOR-003 Multipart upload interruption cleanup](https://evidence.postbase.internal/staging/2026-04-08/storage-multipart-recovery)
-- [EV-STOR-004 Object existence reconciliation](https://evidence.postbase.internal/staging/2026-04-08/storage-reconcile)
-- [EV-STOR-005 Bucket migration checksum verification](https://evidence.postbase.internal/staging/2026-04-08/storage-bucket-migration)
