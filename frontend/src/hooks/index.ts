@@ -125,4 +125,6 @@ export {
   useUpdatePostBaseBindingStatus,
   useCreatePostBaseSwitchover,
   useDrainPostBaseWebhooks,
+  useRecoverPostBaseWebhooks,
+  useReconcilePostBaseMigration,
 } from './use-postbase';

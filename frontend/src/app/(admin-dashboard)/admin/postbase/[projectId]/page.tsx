@@ -20,6 +20,8 @@ import {
   usePostBaseMigrations,
   usePostBaseProjectOverview,
   usePostBaseProviderCatalog,
+  useReconcilePostBaseMigration,
+  useRecoverPostBaseWebhooks,
   usePostBaseSecrets,
   usePostBaseUsage,
   useRetryPostBaseMigration,
@@ -48,7 +50,11 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const { data: migrations } = usePostBaseMigrations(primaryEnvironment?.id);
   const applyMigration = useApplyPostBaseMigration(primaryEnvironment?.id);
   const retryMigration = useRetryPostBaseMigration(primaryEnvironment?.id);
+  const reconcileMigration = useReconcilePostBaseMigration(primaryEnvironment?.id);
   const drainWebhooks = useDrainPostBaseWebhooks(primaryEnvironment?.id);
+  const recoverWebhooks = useRecoverPostBaseWebhooks(primaryEnvironment?.id);
+  const [runningActions, setRunningActions] = useState<Record<string, boolean>>({});
+  const [latestOperationSummary, setLatestOperationSummary] = useState<string | null>(null);
 
   const usageByCapability = useMemo(() => {
     const buckets = new Map<string, number>();
@@ -60,6 +66,19 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
 
   const pendingMigrations = (migrations ?? []).filter((item) => item.status === 'pending');
   const failedMigrations = (migrations ?? []).filter((item) => item.status === 'failed');
+  const needsReconciliation = (migrations ?? []).filter((item) => item.reconciliation_status !== 'in_sync');
+
+  const runAction = async (actionKey: string, action: () => Promise<void>) => {
+    if (runningActions[actionKey]) {
+      return;
+    }
+    setRunningActions((current) => ({ ...current, [actionKey]: true }));
+    try {
+      await action();
+    } finally {
+      setRunningActions((current) => ({ ...current, [actionKey]: false }));
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -91,6 +110,16 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                 </div>
               </div>
               <p className="mt-2 text-gray-600">{env.readiness_detail || 'No readiness details reported.'}</p>
+              {!isReadinessHealthy(env.readiness_state) && (
+                <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                  <p className="font-medium">Failure reasons & remediations</p>
+                  {buildReadinessRemediations(env.readiness_detail).map((item) => (
+                    <p key={`${env.environment_id}-${item.reason}`}>
+                      • <span className="font-medium">{item.reason}</span>: {item.remediation}
+                    </p>
+                  ))}
+                </div>
+              )}
               <div className="mt-2 text-xs text-gray-500">
                 degraded: {env.degraded_bindings} · pending migrations: {env.pending_migrations} · recent switchovers:{' '}
                 {env.recent_switchovers}
@@ -117,12 +146,75 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           ))}
           <div className="flex items-center justify-between rounded border border-gray-200 p-2">
             <span>Drain due webhook deliveries</span>
-            <Button size="sm" onClick={() => drainWebhooks.mutate(200)} disabled={drainWebhooks.isPending || !primaryEnvironment?.id}>
-              Run now
+            <Button
+              size="sm"
+              onClick={() =>
+                runAction('drain-webhooks', async () => {
+                  const result = await drainWebhooks.mutateAsync(200);
+                  setLatestOperationSummary(`Webhook drain complete: ${result.drained_count} job(s) drained.`);
+                })
+              }
+              disabled={runningActions['drain-webhooks'] || !primaryEnvironment?.id}
+            >
+              {runningActions['drain-webhooks'] ? 'Running…' : 'Run now'}
+            </Button>
+          </div>
+          <div className="flex items-center justify-between rounded border border-gray-200 p-2">
+            <span>Recover exhausted webhook deliveries</span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                runAction('recover-webhooks', async () => {
+                  const result = await recoverWebhooks.mutateAsync(200);
+                  setLatestOperationSummary(
+                    `Webhook recovery complete: ${result.requeued_jobs}/${result.scanned_failed_jobs} exhausted job(s) re-queued.`,
+                  );
+                })
+              }
+              disabled={runningActions['recover-webhooks'] || !primaryEnvironment?.id}
+            >
+              {runningActions['recover-webhooks'] ? 'Running…' : 'Run now'}
+            </Button>
+          </div>
+          <div className="flex items-center justify-between rounded border border-gray-200 p-2">
+            <span>Reconcile drifted/pending migrations</span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                runAction('reconcile-all', async () => {
+                  if (needsReconciliation.length === 0) {
+                    setLatestOperationSummary('No migrations currently require reconciliation.');
+                    return;
+                  }
+                  for (const migration of needsReconciliation) {
+                    await reconcileMigration.mutateAsync(migration.id);
+                  }
+                  setLatestOperationSummary(`Reconciliation run complete for ${needsReconciliation.length} migration(s).`);
+                })
+              }
+              disabled={runningActions['reconcile-all'] || !primaryEnvironment?.id || needsReconciliation.length === 0}
+            >
+              {runningActions['reconcile-all'] ? 'Running…' : 'Run now'}
             </Button>
           </div>
           {drainWebhooks.data && <p className="text-xs text-gray-500">Last run drained {drainWebhooks.data.drained_count} job(s).</p>}
+          {recoverWebhooks.data && (
+            <p className="text-xs text-gray-500">
+              Last recovery re-queued {recoverWebhooks.data.requeued_jobs} job(s) from {recoverWebhooks.data.scanned_failed_jobs} scanned.
+            </p>
+          )}
+          <OperationStatusSummary
+            latestOperationSummary={latestOperationSummary}
+            drainError={drainWebhooks.error}
+            recoverError={recoverWebhooks.error}
+            reconcileError={reconcileMigration.error}
+            lastPolledAt={migrations?.[0]?.last_reconciled_at ?? null}
+          />
           <MutationError mutationError={drainWebhooks.error} />
+          <MutationError mutationError={recoverWebhooks.error} />
+          <MutationError mutationError={reconcileMigration.error} />
         </CardContent>
       </Card>
 
@@ -186,6 +278,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                 </div>
                 <p className="text-xs text-gray-500">{migration.applied_sql || 'Pending SQL apply'}</p>
                 <p className="text-xs text-gray-500">reconciliation: {migration.reconciliation_status}</p>
+                {migration.reconcile_error_text && <p className="text-xs text-red-600">reconcile error: {migration.reconcile_error_text}</p>}
                 <div className="flex gap-2">
                   {migration.status === 'pending' && (
                     <Button size="sm" onClick={() => applyMigration.mutate(migration.id)} disabled={applyMigration.isPending}>
@@ -195,6 +288,23 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                   {migration.status === 'failed' && (
                     <Button size="sm" variant="outline" onClick={() => retryMigration.mutate(migration.id)} disabled={retryMigration.isPending}>
                       Retry
+                    </Button>
+                  )}
+                  {migration.reconciliation_status !== 'in_sync' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        runAction(`reconcile-${migration.id}`, async () => {
+                          const result = await reconcileMigration.mutateAsync(migration.id);
+                          setLatestOperationSummary(
+                            `Migration ${result.version} reconciliation status: ${result.reconciliation_status}.`,
+                          );
+                        })
+                      }
+                      disabled={runningActions[`reconcile-${migration.id}`]}
+                    >
+                      {runningActions[`reconcile-${migration.id}`] ? 'Reconciling…' : 'Reconcile now'}
                     </Button>
                   )}
                 </div>
@@ -209,6 +319,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           )}
           <MutationError mutationError={applyMigration.error} />
           <MutationError mutationError={retryMigration.error} />
+          <MutationError mutationError={reconcileMigration.error} />
         </CardContent>
       </Card>
 
@@ -234,6 +345,83 @@ function MetricCard({ label, value }: { label: string; value: number }) {
         <p className="text-2xl font-semibold text-gray-900">{value}</p>
       </CardContent>
     </Card>
+  );
+}
+
+interface ReadinessRemediation {
+  reason: string;
+  remediation: string;
+}
+
+const READINESS_REMEDIATION_RULES: Array<{ keywords: string[]; remediation: ReadinessRemediation }> = [
+  {
+    keywords: ['secret', 'credential', 'key'],
+    remediation: {
+      reason: 'Credentials are missing or invalid',
+      remediation: 'Rotate or re-create provider secrets, then re-run validation.',
+    },
+  },
+  {
+    keywords: ['migration', 'schema', 'drift'],
+    remediation: {
+      reason: 'Schema migration drift detected',
+      remediation: 'Run reconciliation, inspect drift details, and retry failed migrations.',
+    },
+  },
+  {
+    keywords: ['degraded', 'provider', 'adapter'],
+    remediation: {
+      reason: 'Provider capability is degraded',
+      remediation: 'Inspect provider health and fail over to a certified adapter if available.',
+    },
+  },
+];
+
+export function isReadinessHealthy(readinessState: string) {
+  return readinessState === 'ready';
+}
+
+export function buildReadinessRemediations(readinessDetail: string): ReadinessRemediation[] {
+  const detail = readinessDetail.toLowerCase();
+  const matches = READINESS_REMEDIATION_RULES.filter((rule) => rule.keywords.some((keyword) => detail.includes(keyword))).map(
+    (rule) => rule.remediation,
+  );
+
+  if (matches.length > 0) {
+    return matches;
+  }
+
+  return [
+    {
+      reason: 'Validation checks did not pass',
+      remediation: 'Review capability health and execute the suggested run-now operational jobs.',
+    },
+  ];
+}
+
+interface OperationStatusSummaryProps {
+  latestOperationSummary: string | null;
+  drainError: unknown;
+  recoverError: unknown;
+  reconcileError: unknown;
+  lastPolledAt: string | null;
+}
+
+export function OperationStatusSummary({
+  latestOperationSummary,
+  drainError,
+  recoverError,
+  reconcileError,
+  lastPolledAt,
+}: OperationStatusSummaryProps) {
+  const hasPermissionError = [drainError, recoverError, reconcileError].some((error) => isPermissionDenied(error));
+  return (
+    <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-600">
+      <p className="font-medium text-gray-700">Latest run status</p>
+      <p>{latestOperationSummary ?? 'No manual operation run yet in this session.'}</p>
+      <p>Outcome summary: {hasPermissionError ? 'Permission-restricted for one or more actions.' : 'No permission blockers reported.'}</p>
+      <p>Latest reconciliation poll: {lastPolledAt ? new Date(lastPolledAt).toLocaleString() : 'Awaiting migration poll result.'}</p>
+    </div>
   );
 }
 
@@ -516,7 +704,15 @@ function MutationError({ mutationError }: { mutationError: unknown }) {
   return <p className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">{message}</p>;
 }
 
+function isPermissionDenied(error: unknown): boolean {
+  const axiosError = error as AxiosError;
+  return axiosError?.response?.status === 401 || axiosError?.response?.status === 403;
+}
+
 function extractMutationError(error: unknown): string {
+  if (isPermissionDenied(error)) {
+    return 'Permission restricted: your role cannot execute this operation.';
+  }
   const axiosError = error as AxiosError<{ detail?: string | { message?: string } }>;
   if (axiosError?.response?.data?.detail) {
     if (typeof axiosError.response.data.detail === 'string') {
