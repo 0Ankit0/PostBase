@@ -15,7 +15,9 @@ from src.postbase.capabilities.events.contracts import (
     EventPublishRequest,
     SubscriptionCreateRequest,
     SubscriptionRead,
+    SubscriptionUpdateRequest,
 )
+from src.postbase.capabilities.events.validation import validate_subscription_configuration
 from src.postbase.capabilities.events.webhook_jobs import enqueue_webhook_job, process_due_webhook_jobs
 from src.postbase.domain.enums import CapabilityKey
 from src.postbase.domain.models import DeliveryRecord, EventChannel, Subscription
@@ -85,6 +87,7 @@ class RedisPubSubEventsProvider:
         channel = await db.get(EventChannel, channel_id)
         if channel is None or channel.environment_id != context.environment_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
+        payload = validate_subscription_configuration(context, payload)
         row = Subscription(
             channel_id=channel.id,
             target_type=payload.target_type,
@@ -98,6 +101,44 @@ class RedisPubSubEventsProvider:
             environment_id=context.environment_id,
             capability_key=CapabilityKey.EVENTS.value,
             metric_key="create_subscription",
+        )
+        await db.commit()
+        return SubscriptionRead(
+            id=row.id,
+            channel_id=row.channel_id,
+            target_type=row.target_type,
+            target_ref=row.target_ref,
+            config_json=row.config_json,
+            is_active=row.is_active,
+        )
+
+    async def update_subscription(self, context, subscription_id: int, payload: SubscriptionUpdateRequest) -> SubscriptionRead:
+        db: AsyncSession = context.db  # type: ignore[attr-defined]
+        row = await db.get(Subscription, subscription_id)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
+        channel = await db.get(EventChannel, row.channel_id)
+        if channel is None or channel.environment_id != context.environment_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
+
+        next_payload = SubscriptionCreateRequest(
+            target_type=payload.target_type or row.target_type,
+            target_ref=payload.target_ref or row.target_ref,
+            config_json={**row.config_json, **(payload.config_json or {})},
+        )
+        validated = validate_subscription_configuration(context, next_payload)
+        row.target_type = validated.target_type
+        row.target_ref = validated.target_ref
+        row.config_json = validated.config_json
+        if payload.is_active is not None:
+            row.is_active = payload.is_active
+
+        await db.flush()
+        await record_usage(
+            db,
+            environment_id=context.environment_id,
+            capability_key=CapabilityKey.EVENTS.value,
+            metric_key="update_subscription",
         )
         await db.commit()
         return SubscriptionRead(

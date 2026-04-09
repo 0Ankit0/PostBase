@@ -7,6 +7,7 @@ from src.postbase.capabilities.events.contracts import (
     EventPublishRequest,
     SubscriptionCreateRequest,
     SubscriptionRead,
+    SubscriptionUpdateRequest,
 )
 from src.postbase.capabilities.events.dependencies import get_access_context, get_events_provider
 
@@ -38,6 +39,16 @@ async def create_subscription(
     provider=Depends(get_events_provider),
 ) -> SubscriptionRead:
     return await provider.create_subscription(context, channel_id, payload)
+
+
+@router.patch("/subscriptions/{subscription_id}", response_model=SubscriptionRead)
+async def update_subscription(
+    subscription_id: int,
+    payload: SubscriptionUpdateRequest,
+    context=Depends(get_access_context),
+    provider=Depends(get_events_provider),
+) -> SubscriptionRead:
+    return await provider.update_subscription(context, subscription_id, payload)
 
 
 @router.post("/publish/{channel_id}", response_model=list[DeliveryRead])
