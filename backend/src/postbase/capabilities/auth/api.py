@@ -2,43 +2,51 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from src.postbase.capabilities.contracts import FacadeStatusResponse
 from src.postbase.capabilities.auth.contracts import (
     AuthCurrentUser,
     AuthLoginRequest,
+    AuthRefreshRequest,
+    AuthSessionResponse,
     AuthSignupRequest,
     AuthTokens,
 )
-from src.postbase.capabilities.auth.dependencies import get_access_context, get_auth_provider
+from src.postbase.capabilities.auth.dependencies import (
+    get_access_context,
+    get_auth_facade,
+    get_auth_provider,
+)
+from src.postbase.capabilities.auth.service import AuthFacade
 
 router = APIRouter(prefix="/auth", tags=["postbase-auth"])
 
 
-@router.post("/users")
+@router.post("/users", response_model=AuthSessionResponse)
 async def signup(
     payload: AuthSignupRequest,
     context=Depends(get_access_context),
     provider=Depends(get_auth_provider),
-) -> dict:
+) -> AuthSessionResponse:
     user, tokens = await provider.signup(context, payload)
-    return {"user": user.model_dump(), "tokens": tokens.model_dump()}
+    return AuthSessionResponse(user=user, tokens=tokens)
 
 
-@router.post("/sessions")
+@router.post("/sessions", response_model=AuthSessionResponse)
 async def login(
     payload: AuthLoginRequest,
     context=Depends(get_access_context),
     provider=Depends(get_auth_provider),
-) -> dict:
+) -> AuthSessionResponse:
     user, tokens = await provider.login(context, payload)
-    return {"user": user.model_dump(), "tokens": tokens.model_dump()}
+    return AuthSessionResponse(user=user, tokens=tokens)
 
 
 @router.post("/sessions/refresh", response_model=AuthTokens)
 async def refresh(
-    payload: dict,
+    payload: AuthRefreshRequest,
     provider=Depends(get_auth_provider),
 ) -> AuthTokens:
-    return await provider.refresh(payload["refresh_token"])
+    return await provider.refresh(payload.refresh_token)
 
 
 @router.get("/me", response_model=AuthCurrentUser)
@@ -55,3 +63,11 @@ async def logout(
     provider=Depends(get_auth_provider),
 ) -> None:
     await provider.logout(context)
+
+
+@router.get("/status", response_model=FacadeStatusResponse)
+async def auth_status(
+    context=Depends(get_access_context),
+    facade: AuthFacade = Depends(get_auth_facade),
+) -> FacadeStatusResponse:
+    return await facade.status(context)

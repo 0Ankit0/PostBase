@@ -39,7 +39,12 @@ async def get_access_context(
     )
 
 
+def get_auth_facade() -> AuthFacade:
+    return AuthFacade()
+
+
 async def get_auth_provider(
     context: PostBaseAccessContext = Depends(get_access_context),
+    facade: AuthFacade = Depends(get_auth_facade),
 ):
-    return await AuthFacade().resolve_provider(context)
+    return await facade.resolve_provider(context)

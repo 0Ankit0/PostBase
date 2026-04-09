@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from src.postbase.capabilities.data.contracts import DataMutationPayload, DataQueryRequest, DataQueryResult
-from src.postbase.capabilities.data.dependencies import get_access_context, get_data_provider
+from src.postbase.capabilities.contracts import FacadeStatusResponse
+from src.postbase.capabilities.data.contracts import DataMutationPayload, DataMutationResult, DataQueryRequest, DataQueryResult
+from src.postbase.capabilities.data.dependencies import get_access_context, get_data_facade, get_data_provider
+from src.postbase.capabilities.data.service import DataFacade
 
 router = APIRouter(prefix="/data", tags=["postbase-data"])
 
@@ -27,18 +29,18 @@ async def list_rows(
     return await provider.list_rows(context, namespace, table)
 
 
-@router.post("/{namespace}/{table}")
+@router.post("/{namespace}/{table}", response_model=DataMutationResult)
 async def create_row(
     namespace: str,
     table: str,
     payload: DataMutationPayload,
     context=Depends(get_access_context),
     provider=Depends(get_data_provider),
-) -> dict:
+) -> DataMutationResult:
     return await provider.create_row(context, namespace, table, payload)
 
 
-@router.patch("/{namespace}/{table}/{row_id}")
+@router.patch("/{namespace}/{table}/{row_id}", response_model=DataMutationResult)
 async def update_row(
     namespace: str,
     table: str,
@@ -46,7 +48,7 @@ async def update_row(
     payload: DataMutationPayload,
     context=Depends(get_access_context),
     provider=Depends(get_data_provider),
-) -> dict:
+) -> DataMutationResult:
     return await provider.update_row(context, namespace, table, row_id, payload)
 
 
@@ -59,3 +61,11 @@ async def delete_row(
     provider=Depends(get_data_provider),
 ) -> None:
     await provider.delete_row(context, namespace, table, row_id)
+
+
+@router.get("/status", response_model=FacadeStatusResponse)
+async def data_status(
+    context=Depends(get_access_context),
+    facade: DataFacade = Depends(get_data_facade),
+) -> FacadeStatusResponse:
+    return await facade.status(context)
