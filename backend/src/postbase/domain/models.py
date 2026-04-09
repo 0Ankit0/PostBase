@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Column, Index, UniqueConstraint, text
+from sqlalchemy import JSON, Column, Index, String, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 from src.postbase.domain.enums import (
@@ -495,7 +495,44 @@ class WebhookDeliveryJob(SQLModel, table=True):
     attempt_count: int = Field(default=0)
     max_attempts: int = Field(default=3)
     error_text: str = Field(default="")
+    latest_response_code: int | None = Field(default=None)
+    latest_latency_ms: int | None = Field(default=None)
+    attempt_history_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+    )
     next_attempt_at: datetime | None = Field(default=None, index=True)
     delivered_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=utcnow, index=True)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class DeadLetterWebhookDelivery(SQLModel, table=True):
+    __tablename__ = "postbase_dead_letter_webhook_delivery"
+
+    id: int | None = Field(default=None, primary_key=True)
+    webhook_delivery_job_id: int = Field(
+        foreign_key="postbase_webhook_delivery_job.id",
+        index=True,
+        unique=True,
+    )
+    channel_id: int = Field(foreign_key="postbase_event_channel.id", index=True)
+    subscription_id: int = Field(foreign_key="postbase_subscription.id", index=True)
+    event_name: str = Field(max_length=120, index=True)
+    payload_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
+    target_ref: str = Field(max_length=255)
+    attempt_count: int = Field(default=0)
+    max_attempts: int = Field(default=3)
+    latest_response_code: int | None = Field(default=None)
+    latest_latency_ms: int | None = Field(default=None)
+    error_text: str = Field(default="")
+    attempt_history_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+    )
+    dead_letter_state: str = Field(default="active", max_length=32)
+    dead_lettered_at: datetime = Field(default_factory=utcnow, index=True)
+    replayed_at: datetime | None = Field(default=None)

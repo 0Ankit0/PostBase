@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -66,6 +64,7 @@ from src.postbase.control_plane.service import (
     rotate_secret_ref,
     set_binding_status,
 )
+from src.postbase.capabilities.events.webhook_jobs import replay_dead_letter_webhook_jobs
 from src.postbase.domain.models import (
     AuditLog,
     BindingSecretRef,
@@ -80,7 +79,6 @@ from src.postbase.domain.models import (
     SwitchoverPlan,
     DataNamespace,
     UsageMeter,
-    WebhookDeliveryJob,
 )
 from src.postbase.platform.access import issue_environment_api_key
 from src.postbase.platform.audit import record_audit_event
@@ -829,26 +827,12 @@ async def recover_exhausted_webhooks(
         current_user=current_user,
         action="webhook_recover",
     )
-    failed_jobs = (
-        await db.execute(
-            select(WebhookDeliveryJob)
-            .where(
-                WebhookDeliveryJob.status == "failed",
-                WebhookDeliveryJob.attempt_count >= WebhookDeliveryJob.max_attempts,
-            )
-            .order_by(WebhookDeliveryJob.created_at.asc())
-            .limit(limit)
-        )
-    ).scalars().all()
-    for job in failed_jobs:
-        job.status = "retrying"
-        job.error_text = "operator initiated retry after exhaustion"
-        job.next_attempt_at = datetime.now(timezone.utc)
+    dead_letters = await replay_dead_letter_webhook_jobs(db, limit=limit)
     await db.commit()
     return WebhookRecoveryResult(
-        scanned_failed_jobs=len(failed_jobs),
-        requeued_jobs=len(failed_jobs),
-        exhausted_job_ids=[encode_id(job.id) for job in failed_jobs if job.id is not None],
+        scanned_failed_jobs=len(dead_letters),
+        requeued_jobs=len(dead_letters),
+        exhausted_job_ids=[encode_id(item.id) for item in dead_letters if item.id is not None],
     )
 
 @router.post("/environments/{environment_id}/data/namespaces", response_model=NamespaceRead, status_code=status.HTTP_201_CREATED)
