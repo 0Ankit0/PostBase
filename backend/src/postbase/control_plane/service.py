@@ -580,6 +580,7 @@ async def create_table_metadata(
             table_definition_id=provider_entry.id,
             version=f"{provider_entry.id:04d}",
             status=migration_status,
+            reconciliation_status="in_sync" if migration_status == MigrationStatus.APPLIED else "pending_apply",
             applied_sql=f"create table {normalized_table}",
         )
     )
@@ -630,6 +631,11 @@ async def apply_schema_migration(
             touch_updated_at(definition)
 
         migration.status = MigrationStatus.APPLIED
+        migration.reconciliation_status = "in_sync"
+        migration.drift_severity = "none"
+        migration.drift_entities_json = []
+        migration.reconcile_error_text = ""
+        migration.last_reconciled_at = datetime.now(timezone.utc)
         touch_updated_at(migration)
         await _finish_migration_execution(db, execution=execution, status=MigrationStatus.APPLIED)
         await record_audit_event(
@@ -650,6 +656,11 @@ async def apply_schema_migration(
         if migration is None:
             raise
         migration.status = MigrationStatus.FAILED
+        migration.reconciliation_status = "drifted"
+        migration.drift_severity = "critical"
+        migration.drift_entities_json = [f"migration:{migration.id}"]
+        migration.reconcile_error_text = str(exc)
+        migration.last_reconciled_at = datetime.now(timezone.utc)
         touch_updated_at(migration)
         definition = await db.get(TableDefinition, migration.table_definition_id)
         if definition is not None:
@@ -709,6 +720,11 @@ async def cancel_schema_migration(
         return migration
 
     migration.status = MigrationStatus.CANCELED
+    migration.reconciliation_status = "canceled"
+    migration.drift_severity = "none"
+    migration.drift_entities_json = []
+    migration.reconcile_error_text = ""
+    migration.last_reconciled_at = datetime.now(timezone.utc)
     definition = await db.get(TableDefinition, migration.table_definition_id)
     if definition is not None:
         definition.status = "canceled_migration"
@@ -758,6 +774,119 @@ async def _finish_migration_execution(
     execution.error_text = error_text
     execution.finished_at = datetime.now(timezone.utc)
     await db.flush()
+
+
+def _derive_drift_severity(affected_entities: list[str]) -> str:
+    if not affected_entities:
+        return "none"
+    if any(entity.startswith("table:") for entity in affected_entities):
+        return "critical"
+    if any(entity.startswith("namespace:") for entity in affected_entities):
+        return "high"
+    return "medium"
+
+
+async def detect_migration_drift(
+    db: AsyncSession,
+    *,
+    migration: SchemaMigration,
+) -> tuple[str, str, list[str]]:
+    if migration.status in {MigrationStatus.QUEUED, MigrationStatus.PENDING}:
+        return "pending_apply", "none", []
+    if migration.status == MigrationStatus.CANCELED:
+        return "canceled", "none", []
+    if migration.status == MigrationStatus.FAILED:
+        return "drifted", "critical", [f"migration:{migration.id}"]
+
+    namespace = await db.get(DataNamespace, migration.namespace_id)
+    definition = await db.get(TableDefinition, migration.table_definition_id) if migration.table_definition_id else None
+    affected_entities: list[str] = []
+    if namespace is None:
+        affected_entities.append(f"namespace:{migration.namespace_id}")
+    if migration.table_definition_id is not None and definition is None:
+        affected_entities.append(f"table_definition:{migration.table_definition_id}")
+
+    if namespace is not None and definition is not None:
+        provider = PostgresNativeDataProvider()
+        table_exists = await provider.table_exists(db, namespace, definition.table_name)
+        if not table_exists:
+            affected_entities.append(f"table:{namespace.physical_schema}.{definition.table_name}")
+        else:
+            actual_columns = await provider.list_table_columns(db, namespace, definition.table_name)
+            expected_columns = {column["name"] for column in definition.columns_json if "name" in column}
+            expected_columns.add("id")
+            missing_columns = sorted(expected_columns - actual_columns)
+            affected_entities.extend(
+                f"column:{namespace.physical_schema}.{definition.table_name}.{column_name}"
+                for column_name in missing_columns
+            )
+
+    severity = _derive_drift_severity(affected_entities)
+    return ("in_sync", severity, []) if not affected_entities else ("drifted", severity, affected_entities)
+
+
+async def refresh_migration_reconciliation_state(
+    db: AsyncSession,
+    *,
+    migration: SchemaMigration,
+) -> SchemaMigration:
+    reconciliation_status, drift_severity, affected_entities = await detect_migration_drift(db, migration=migration)
+    migration.reconciliation_status = reconciliation_status
+    migration.drift_severity = drift_severity
+    migration.drift_entities_json = affected_entities
+    migration.reconcile_error_text = ""
+    migration.last_reconciled_at = datetime.now(timezone.utc)
+    touch_updated_at(migration)
+    await db.flush()
+    return migration
+
+
+async def execute_migration_reconciliation(
+    db: AsyncSession,
+    *,
+    migration: SchemaMigration,
+    max_retries: int = 3,
+) -> SchemaMigration:
+    migration = await refresh_migration_reconciliation_state(db, migration=migration)
+    if migration.reconciliation_status == "in_sync":
+        return migration
+    if migration.status != MigrationStatus.APPLIED:
+        return migration
+
+    if migration.reconcile_attempt_count >= max_retries:
+        migration.reconcile_error_text = "reconciliation retry budget exhausted"
+        touch_updated_at(migration)
+        await db.flush()
+        return migration
+
+    migration.reconcile_attempt_count += 1
+    touch_updated_at(migration)
+    await db.flush()
+
+    namespace = await db.get(DataNamespace, migration.namespace_id)
+    definition = await db.get(TableDefinition, migration.table_definition_id) if migration.table_definition_id else None
+    if namespace is None or definition is None:
+        migration.reconcile_error_text = "metadata entities required for reconciliation are missing"
+        migration.reconciliation_status = "drifted"
+        migration.last_reconciled_at = datetime.now(timezone.utc)
+        touch_updated_at(migration)
+        await db.flush()
+        return migration
+
+    provider = PostgresNativeDataProvider()
+    try:
+        await provider.create_namespace(db, namespace)
+        await provider.create_table(db, namespace, definition)
+        migration.reconcile_error_text = ""
+    except Exception as exc:
+        migration.reconcile_error_text = str(exc)
+        migration.reconciliation_status = "drifted"
+        migration.last_reconciled_at = datetime.now(timezone.utc)
+        touch_updated_at(migration)
+        await db.flush()
+        return migration
+
+    return await refresh_migration_reconciliation_state(db, migration=migration)
 
 
 def touch_updated_at(model: object) -> None:
@@ -1270,6 +1399,11 @@ async def build_project_overview(
             for item in migrations
             if item.environment_id == environment.id and item.status in {MigrationStatus.QUEUED, MigrationStatus.PENDING}
         )
+        drifted_migrations = sum(
+            1
+            for item in migrations
+            if item.environment_id == environment.id and item.reconciliation_status == "drifted"
+        )
         environment_health = health_by_environment[environment.id]
         environment_rows.append(
             {
@@ -1282,6 +1416,7 @@ async def build_project_overview(
                 "degraded_bindings": environment_health["degraded"],
                 "recent_switchovers": environment_switchovers,
                 "pending_migrations": pending_migrations,
+                "drifted_migrations": drifted_migrations,
                 "secret_count": environment_secret_count,
                 "key_count": environment_key_count,
                 "usage_points_total": environment_usage,

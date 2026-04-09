@@ -1,13 +1,14 @@
 import base64
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import select
 
 from src.apps.iam.models.user import User
 from src.apps.multitenancy.models.tenant import Tenant, TenantMember, TenantRole
 from src.apps.iam.utils.hashid import encode_id
 from src.postbase.domain.enums import BindingStatus, MigrationStatus
-from src.postbase.domain.models import CapabilityBinding, SchemaMigration, SchemaMigrationExecution
+from src.postbase.domain.models import CapabilityBinding, DataNamespace, SchemaMigration, SchemaMigrationExecution, TableDefinition
 
 
 @pytest.mark.asyncio
@@ -804,6 +805,152 @@ async def test_migration_retry_flow_succeeds_after_failure(client, db_session, m
     assert len(executions) == 2
     assert executions[0].status == MigrationStatus.FAILED
     assert executions[1].status == MigrationStatus.APPLIED
+
+
+@pytest.mark.asyncio
+async def test_migration_reconciliation_no_drift_path(client, db_session):
+    owner_headers, environment_id, migration_id = await _setup_migration_context(
+        client,
+        db_session,
+        email="mig-nodrift@example.com",
+        username="mig_nodrift",
+        tenant_slug="mig-nodrift-tenant",
+        project_slug="mig-nodrift-project",
+    )
+    apply_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply",
+        headers=owner_headers,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+
+    migrations_response = await client.get(
+        f"/api/v1/environments/{environment_id}/migrations",
+        headers=owner_headers,
+    )
+    assert migrations_response.status_code == 200, migrations_response.text
+    migration_payload = migrations_response.json()[0]
+    assert migration_payload["reconciliation_status"] == "in_sync"
+    assert migration_payload["drift_severity"] == "none"
+    assert migration_payload["affected_entities"] == []
+
+
+@pytest.mark.asyncio
+async def test_migration_reconciliation_detects_table_drift(client, db_session):
+    owner_headers, environment_id, migration_id = await _setup_migration_context(
+        client,
+        db_session,
+        email="mig-drift@example.com",
+        username="mig_drift",
+        tenant_slug="mig-drift-tenant",
+        project_slug="mig-drift-project",
+    )
+    apply_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply",
+        headers=owner_headers,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+    migration = await db_session.get(SchemaMigration, int(migration_id))
+    assert migration is not None
+    namespace = await db_session.get(DataNamespace, migration.namespace_id)
+    definition = await db_session.get(TableDefinition, migration.table_definition_id)
+    assert namespace is not None
+    assert definition is not None
+    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
+    await db_session.execute(text(f'DROP TABLE IF EXISTS "{physical_table_name}"'))
+    await db_session.commit()
+
+    migrations_response = await client.get(
+        f"/api/v1/environments/{environment_id}/migrations",
+        headers=owner_headers,
+    )
+    assert migrations_response.status_code == 200, migrations_response.text
+    payload = migrations_response.json()[0]
+    assert payload["reconciliation_status"] == "drifted"
+    assert payload["drift_severity"] == "critical"
+    assert any(entity.startswith("table:") for entity in payload["affected_entities"])
+
+
+@pytest.mark.asyncio
+async def test_migration_reconciliation_executor_repairs_drift(client, db_session):
+    owner_headers, environment_id, migration_id = await _setup_migration_context(
+        client,
+        db_session,
+        email="mig-reconcile-success@example.com",
+        username="mig_reconcile_success",
+        tenant_slug="mig-reconcile-success-tenant",
+        project_slug="mig-reconcile-success-project",
+    )
+    apply_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply",
+        headers=owner_headers,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+    migration = await db_session.get(SchemaMigration, int(migration_id))
+    assert migration is not None
+    namespace = await db_session.get(DataNamespace, migration.namespace_id)
+    definition = await db_session.get(TableDefinition, migration.table_definition_id)
+    assert namespace is not None
+    assert definition is not None
+    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
+    await db_session.execute(text(f'DROP TABLE IF EXISTS "{physical_table_name}"'))
+    await db_session.commit()
+
+    reconcile_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/reconcile",
+        headers=owner_headers,
+    )
+    assert reconcile_response.status_code == 200, reconcile_response.text
+    assert reconcile_response.json()["reconciliation_status"] == "in_sync"
+    assert reconcile_response.json()["reconcile_attempt_count"] == 1
+
+    second_reconcile_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/reconcile",
+        headers=owner_headers,
+    )
+    assert second_reconcile_response.status_code == 200, second_reconcile_response.text
+    assert second_reconcile_response.json()["reconcile_attempt_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_migration_reconciliation_executor_failure_path(client, db_session, monkeypatch):
+    owner_headers, environment_id, migration_id = await _setup_migration_context(
+        client,
+        db_session,
+        email="mig-reconcile-failure@example.com",
+        username="mig_reconcile_failure",
+        tenant_slug="mig-reconcile-failure-tenant",
+        project_slug="mig-reconcile-failure-project",
+    )
+    apply_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/apply",
+        headers=owner_headers,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+    migration = await db_session.get(SchemaMigration, int(migration_id))
+    assert migration is not None
+    namespace = await db_session.get(DataNamespace, migration.namespace_id)
+    definition = await db_session.get(TableDefinition, migration.table_definition_id)
+    assert namespace is not None
+    assert definition is not None
+    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
+    await db_session.execute(text(f'DROP TABLE IF EXISTS "{physical_table_name}"'))
+    await db_session.commit()
+
+    from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
+
+    async def failing_create_table(self, db, namespace_row, definition):
+        raise RuntimeError("synthetic reconcile failure")
+
+    monkeypatch.setattr(PostgresNativeDataProvider, "create_table", failing_create_table)
+    reconcile_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/reconcile",
+        headers=owner_headers,
+    )
+    assert reconcile_response.status_code == 200, reconcile_response.text
+    payload = reconcile_response.json()
+    assert payload["reconciliation_status"] == "drifted"
+    assert payload["reconcile_attempt_count"] == 1
+    assert "synthetic reconcile failure" in payload["reconcile_error_text"]
 
 
 @pytest.mark.asyncio

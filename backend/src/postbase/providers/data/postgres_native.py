@@ -190,6 +190,45 @@ class PostgresNativeDataProvider:
         )
         await db.execute(text(sql))
 
+    async def table_exists(self, db: AsyncSession, namespace_row: DataNamespace, table_name: str) -> bool:
+        qualified = self._qualified_table(db, namespace_row.physical_schema, table_name)
+        if db.bind.dialect.name == "sqlite":
+            result = await db.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'table' AND name = :table_name"),
+                {"table_name": qualified.strip('"')},
+            )
+            return result.first() is not None
+        result = await db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = :schema_name
+                  AND table_name = :table_name
+                """
+            ),
+            {"schema_name": namespace_row.physical_schema, "table_name": table_name},
+        )
+        return result.first() is not None
+
+    async def list_table_columns(self, db: AsyncSession, namespace_row: DataNamespace, table_name: str) -> set[str]:
+        qualified = self._qualified_table(db, namespace_row.physical_schema, table_name)
+        if db.bind.dialect.name == "sqlite":
+            result = await db.execute(text(f"PRAGMA table_info({qualified})"))
+            return {str(row[1]) for row in result.fetchall()}
+        result = await db.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = :schema_name
+                  AND table_name = :table_name
+                """
+            ),
+            {"schema_name": namespace_row.physical_schema, "table_name": table_name},
+        )
+        return {str(row[0]) for row in result.fetchall()}
+
     async def _resolve_table(
         self,
         db: AsyncSession,

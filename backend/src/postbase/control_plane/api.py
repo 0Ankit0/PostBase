@@ -57,14 +57,15 @@ from src.postbase.control_plane.service import (
     apply_schema_migration,
     retry_schema_migration,
     cancel_schema_migration,
+    execute_migration_reconciliation,
     ensure_environment_access,
+    refresh_migration_reconciliation_state,
     get_project_usage_meters,
     require_project_access,
     revoke_secret_ref,
     rotate_secret_ref,
     set_binding_status,
 )
-from src.postbase.domain.enums import MigrationStatus
 from src.postbase.domain.models import (
     AuditLog,
     BindingSecretRef,
@@ -78,7 +79,6 @@ from src.postbase.domain.models import (
     SchemaMigration,
     SwitchoverPlan,
     DataNamespace,
-    TableDefinition,
     UsageMeter,
     WebhookDeliveryJob,
 )
@@ -925,27 +925,22 @@ async def create_table(
 
 
 async def _to_migration_read(db: AsyncSession, migration: SchemaMigration) -> MigrationRead:
-    reconciliation_status = "pending_apply"
-    if migration.status == MigrationStatus.APPLIED:
-        reconciliation_status = "in_sync"
-    elif migration.status == MigrationStatus.FAILED:
-        reconciliation_status = "drifted"
-    elif migration.status == MigrationStatus.CANCELED:
-        reconciliation_status = "canceled"
-    if migration.table_definition_id is not None:
-        definition = await db.get(TableDefinition, migration.table_definition_id)
-        if definition is None:
-            reconciliation_status = "drifted"
+    refreshed = await refresh_migration_reconciliation_state(db, migration=migration)
     return MigrationRead(
-        id=migration.id or 0,
-        environment_id=migration.environment_id,
-        namespace_id=migration.namespace_id,
-        table_definition_id=migration.table_definition_id,
-        version=migration.version,
-        status=migration.status,
-        reconciliation_status=reconciliation_status,
-        applied_sql=migration.applied_sql,
-        created_at=migration.created_at,
+        id=refreshed.id or 0,
+        environment_id=refreshed.environment_id,
+        namespace_id=refreshed.namespace_id,
+        table_definition_id=refreshed.table_definition_id,
+        version=refreshed.version,
+        status=refreshed.status,
+        reconciliation_status=refreshed.reconciliation_status,
+        drift_severity=refreshed.drift_severity,
+        affected_entities=refreshed.drift_entities_json,
+        reconcile_attempt_count=refreshed.reconcile_attempt_count,
+        reconcile_error_text=refreshed.reconcile_error_text,
+        last_reconciled_at=refreshed.last_reconciled_at,
+        applied_sql=refreshed.applied_sql,
+        created_at=refreshed.created_at,
     )
 
 @router.get("/environments/{environment_id}/migrations", response_model=list[MigrationRead])
@@ -971,7 +966,9 @@ async def list_environment_migrations(
             .order_by(SchemaMigration.id.desc())
         )
     ).scalars().all()
-    return [await _to_migration_read(db, row) for row in rows]
+    response = [await _to_migration_read(db, row) for row in rows]
+    await db.commit()
+    return response
 
 
 @router.post(
@@ -1039,6 +1036,32 @@ async def retry_environment_migration(
         rollback_sql=f"-- retry for migration {migration.version}",
         rollback_status="requested",
     )
+
+
+@router.post(
+    "/environments/{environment_id}/migrations/{migration_id}/reconcile",
+    response_model=MigrationRead,
+)
+async def reconcile_environment_migration(
+    environment_id: str,
+    migration_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MigrationRead:
+    environment = await _load_environment_or_404(db, environment_id)
+    migration_db_id = decode_id_or_404(migration_id)
+    await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="migrations",
+    )
+    migration = await db.get(SchemaMigration, migration_db_id)
+    if migration is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+    refreshed = await execute_migration_reconciliation(db, migration=migration)
+    await db.commit()
+    return await _to_migration_read(db, refreshed)
 
 
 @router.post(

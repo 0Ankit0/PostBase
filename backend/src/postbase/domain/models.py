@@ -324,6 +324,15 @@ class SchemaMigration(SQLModel, table=True):
     )
     version: str = Field(max_length=40)
     status: MigrationStatus = Field(default=MigrationStatus.APPLIED, index=True)
+    reconciliation_status: str = Field(default="pending_apply", max_length=32, index=True)
+    drift_severity: str = Field(default="none", max_length=16)
+    drift_entities_json: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+    )
+    reconcile_attempt_count: int = Field(default=0)
+    reconcile_error_text: str = Field(default="")
+    last_reconciled_at: datetime | None = Field(default=None)
     applied_sql: str = Field(default="")
     created_at: datetime = Field(default_factory=utcnow)
 
