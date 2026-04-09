@@ -2,25 +2,54 @@
 
 ```mermaid
 flowchart TB
-    internet[Internet / SDK Clients] --> edge[WAF / API Edge]
-    ops[Operator Access] --> adminAccess[Admin Access Gateway]
-    edge --> api[Unified API Cluster]
-    edge --> ws[Realtime Gateway]
+    subgraph edgeZone[Edge Zone]
+        internet[Internet / SDK Clients] --> edge[WAF + Rate Limit + TLS Edge]
+        ops[Operator Access] --> adminAccess[Admin Access Gateway]
+    end
+
+    subgraph appZone[App Zone]
+        api[API Runtime Pool]
+        ws[Realtime Gateway Pool]
+        workers[Async Worker Pool]
+        migration[Migration / Orchestration Workers]
+    end
+
+    subgraph dataZone[Data Zone]
+        db[(Managed PostgreSQL)]
+        queue[(Managed Queue / Bus)]
+        vault[(Managed Secret Store)]
+        report[(Metrics / Logs / Reporting Store)]
+    end
+
+    subgraph integrationZone[Integration / Controlled Egress Zone]
+        egress[Outbound Egress Gateway]
+        providers[External Provider Networks]
+    end
+
+    edge --> api
+    edge --> ws
     adminAccess --> api
-    api --> workers[Worker Cluster]
-    api --> db[(Managed PostgreSQL)]
-    api --> queue[(Managed Queue / Bus)]
-    api --> report[(Reporting Store)]
-    api --> vault[(Secret Store)]
-    workers --> db
+    api --> queue
+    api --> db
+    api --> vault
+    api --> report
+    ws --> queue
+    ws --> report
     workers --> queue
-    workers --> report
+    workers --> db
     workers --> vault
-    workers --> providers[External Provider Networks]
+    workers --> report
+    migration --> queue
+    migration --> db
+    migration --> vault
+    workers --> egress
+    migration --> egress
+    egress --> providers
 ```
 
 ## Deployment Notes
 
-- Separate API, realtime gateway, and worker concerns so bursty client activity does not starve orchestration tasks.
-- PostgreSQL should be treated as a critical tier for metadata and core data services.
-- Provider-facing adapter traffic should originate from controlled worker or adapter runtimes with explicit secret access.
+- API, realtime gateway, and async workers run as separate workload pools with independent autoscaling and resource quotas.
+- Realtime burst handling must not consume worker capacity reserved for queue drains, migrations, or webhook delivery.
+- PostgreSQL is a critical tier for metadata and core data services and stays private to app-zone callers.
+- Provider-facing adapter traffic originates only from approved worker runtimes through controlled egress paths.
