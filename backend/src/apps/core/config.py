@@ -185,6 +185,8 @@ class Settings(BaseSettings):
     CELERY_RESULT_EXPIRES: int = 3600
     CELERY_TASK_ALWAYS_EAGER: bool | None = None
     CELERY_QUEUE_DEFAULT: str = "default"
+    POSTBASE_IDEMPOTENCY_REPLAY_WINDOW_SECONDS: int = 300
+    POSTBASE_FUNCTION_TIMEOUT_RECOVERY_RETRIES: int = 1
 
     BACKEND_CORS_ORIGINS: list[Union[str, AnyHttpUrl]] = [
         "http://localhost",

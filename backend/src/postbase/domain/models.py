@@ -416,8 +416,12 @@ class ExecutionRecord(SQLModel, table=True):
     environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
     invocation_type: str = Field(default="sync", max_length=20)
     idempotency_key: str | None = Field(default=None, max_length=120, index=True)
+    correlation_id: str = Field(default="", max_length=120, index=True)
     replay_of_execution_id: int | None = Field(default=None, foreign_key="postbase_execution_record.id")
+    retry_of_execution_id: int | None = Field(default=None, foreign_key="postbase_execution_record.id")
     retry_count: int = Field(default=0)
+    timeout_ms: int | None = Field(default=None)
+    cancel_requested: bool = Field(default=False)
     log_excerpt: str = Field(default="")
     status: str = Field(default="completed", max_length=32, index=True)
     input_json: dict[str, Any] = Field(
