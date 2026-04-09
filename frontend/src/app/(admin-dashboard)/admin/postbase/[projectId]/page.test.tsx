@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AxiosError } from 'axios';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  buildOperationRemediation,
   buildReadinessRemediations,
   deriveQuerySurfaceState,
   isReadinessHealthy,
@@ -98,5 +99,10 @@ describe('PostBase admin control plane helpers', () => {
         hasData: true,
       }),
     ).toBe('stale-cache');
+  });
+
+  it('returns actionable remediation guidance for high-risk operations', () => {
+    expect(buildOperationRemediation('migration_apply')).toContain('reconcile schema drift');
+    expect(buildOperationRemediation('switchover_execute')).toContain('Resolve preflight blockers');
   });
 });

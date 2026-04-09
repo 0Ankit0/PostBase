@@ -50,28 +50,66 @@ class PostBaseRepository {
     }
   }
 
-  Future<List<PostBaseProjectStatus>> getPlatformStatus() async {
-    final projects = await listProjects();
-    final statuses = <PostBaseProjectStatus>[];
+  Future<PostBasePlatformSnapshot> getPlatformStatusSnapshot({
+    List<PostBaseProjectStatus>? previousStatuses,
+  }) async {
+    final now = DateTime.now().toUtc();
+    try {
+      final projects = await listProjects();
+      final statuses = <PostBaseProjectStatus>[];
+      var degradedCount = 0;
 
-    for (final project in projects) {
-      final overview = await getProjectOverview(project.id);
-      PostBaseCapabilityHealthReport? health;
-      final primaryEnvironment = overview.environments.isNotEmpty
-          ? overview.environments.first.environmentId
-          : null;
-      if (primaryEnvironment != null && primaryEnvironment.isNotEmpty) {
-        health = await getCapabilityHealth(primaryEnvironment);
+      for (final project in projects) {
+        try {
+          final overview = await getProjectOverview(project.id);
+          PostBaseCapabilityHealthReport? health;
+          String? degradedReason;
+          final primaryEnvironment = overview.environments.isNotEmpty
+              ? overview.environments.first.environmentId
+              : null;
+          if (primaryEnvironment != null && primaryEnvironment.isNotEmpty) {
+            try {
+              health = await getCapabilityHealth(primaryEnvironment);
+            } catch (e) {
+              degradedCount += 1;
+              degradedReason = 'Capability health unavailable: ${ErrorHandler.handle(e).message}';
+            }
+          }
+          statuses.add(
+            PostBaseProjectStatus(
+              project: project,
+              overview: overview,
+              primaryEnvironmentHealth: health,
+              hasDegradedBackendState: degradedReason != null,
+              degradedReason: degradedReason,
+            ),
+          );
+        } catch (e) {
+          degradedCount += 1;
+        }
       }
-      statuses.add(
-        PostBaseProjectStatus(
-          project: project,
-          overview: overview,
-          primaryEnvironmentHealth: health,
-        ),
-      );
-    }
 
-    return statuses;
+      return PostBasePlatformSnapshot(
+        statuses: statuses,
+        isFromCache: false,
+        isStale: false,
+        fetchedAt: now,
+        warning: degradedCount > 0
+            ? '$degradedCount project(s) returned degraded backend data.'
+            : null,
+      );
+    } catch (e) {
+      if (previousStatuses != null && previousStatuses.isNotEmpty) {
+        return PostBasePlatformSnapshot(
+          statuses: previousStatuses,
+          isFromCache: true,
+          isStale: true,
+          fetchedAt: now,
+          warning:
+              'Offline or backend failure. Showing cached read-only platform status.',
+        );
+      }
+      throw ErrorHandler.handle(e);
+    }
   }
 }

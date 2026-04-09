@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/error/error_handler.dart';
 import '../../../../core/models/general_setting.dart';
+import '../../../../core/models/platform_surface_state.dart';
 import '../../../../core/models/postbase_status.dart';
 import '../../../../core/network/api_endpoints.dart';
 import '../../../../core/providers/dio_provider.dart';
@@ -636,6 +637,7 @@ class _PlatformTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final platformStatusAsync = ref.watch(postBasePlatformStatusProvider);
+    final notifier = ref.read(postBasePlatformStatusProvider.notifier);
 
     return platformStatusAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -649,21 +651,85 @@ class _PlatformTab extends ConsumerWidget {
           ),
         ),
       ),
-      data: (statuses) {
-        if (statuses.isEmpty) {
+      data: (snapshot) {
+        if (snapshot.statuses.isEmpty) {
           return const Center(child: Text('No PostBase projects available.'));
         }
 
-        return ListView.separated(
-          padding: const EdgeInsets.all(16),
-          itemBuilder: (context, index) {
-            final status = statuses[index];
-            return _PlatformProjectCard(status: status);
-          },
-          separatorBuilder: (_, __) => const SizedBox(height: 12),
-          itemCount: statuses.length,
+        return RefreshIndicator(
+          onRefresh: notifier.load,
+          child: ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return _PlatformStateBanner(snapshot: snapshot);
+              }
+              final status = snapshot.statuses[index - 1];
+              return _PlatformProjectCard(status: status);
+            },
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemCount: snapshot.statuses.length + 1,
+          ),
         );
       },
+    );
+  }
+}
+
+class _PlatformStateBanner extends StatelessWidget {
+  const _PlatformStateBanner({required this.snapshot});
+
+  final PostBasePlatformSnapshot snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasDegradedBackend =
+        snapshot.statuses.any((status) => status.hasDegradedBackendState);
+    final surfaceState = deriveMobilePlatformSurfaceState(
+      hasError: false,
+      isPermissionDenied: false,
+      isFromCache: snapshot.isFromCache,
+      isStale: snapshot.isStale,
+      hasDegradedBackend: hasDegradedBackend,
+    );
+    final chips = <Widget>[
+      const _StatusBadge(label: 'Read-only', color: Colors.blueGrey),
+      _StatusBadge(
+        label: snapshot.isFromCache ? 'Offline cache' : 'Live data',
+        color: snapshot.isFromCache ? Colors.orange : Colors.green,
+      ),
+      _StatusBadge(
+        label: snapshot.isStale ? 'Stale' : 'Fresh',
+        color: snapshot.isStale ? Colors.orange : Colors.green,
+      ),
+    ];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(spacing: 8, runSpacing: 8, children: chips),
+            const SizedBox(height: 8),
+            Text(
+              'Updated ${snapshot.fetchedAt.toLocal()}. Mobile never exposes privileged platform mutations.',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Surface state: ${surfaceState.name}',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            if (snapshot.warning != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                snapshot.warning!,
+                style: const TextStyle(fontSize: 12, color: Colors.orange),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -736,6 +802,13 @@ class _PlatformProjectCard extends StatelessWidget {
                               color: Colors.orange,
                             ))
                         .toList(),
+              ),
+            ],
+            if (status.hasDegradedBackendState && status.degradedReason != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                status.degradedReason!,
+                style: const TextStyle(fontSize: 12, color: Colors.orange),
               ),
             ],
           ],
