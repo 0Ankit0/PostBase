@@ -121,6 +121,7 @@ class BindingStatusUpdate(BaseModel):
 class SwitchoverCreate(BaseModel):
     target_provider_key: str
     strategy: str = "cutover"
+    retirement_strategy: str = "manual"
 
 
 class SwitchoverRead(EncodedModel):
@@ -128,8 +129,10 @@ class SwitchoverRead(EncodedModel):
     capability_binding_id: int
     target_provider_catalog_entry_id: int
     strategy: str
+    retirement_strategy: str
     status: SwitchoverStatus
     execution_detail: str
+    execution_state_json: dict[str, object]
     created_at: datetime
     completed_at: datetime | None
 

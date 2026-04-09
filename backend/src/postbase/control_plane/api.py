@@ -400,6 +400,7 @@ async def create_switchover(
         project=project,
         environment=environment,
         strategy=payload.strategy,
+        retirement_strategy=payload.retirement_strategy,
     )
 
 

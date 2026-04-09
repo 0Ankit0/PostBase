@@ -229,8 +229,13 @@ class SwitchoverPlan(SQLModel, table=True):
         index=True,
     )
     strategy: str = Field(default="cutover", max_length=64)
+    retirement_strategy: str = Field(default="manual", sa_column=Column(String(16), nullable=False, default="manual"))
     status: SwitchoverStatus = Field(default=SwitchoverStatus.PENDING)
     execution_detail: str = Field(default="")
+    execution_state_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
     requested_by_user_id: int | None = Field(default=None, foreign_key="user.id")
     created_at: datetime = Field(default_factory=utcnow)
     completed_at: datetime | None = Field(default=None)
