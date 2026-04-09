@@ -24,6 +24,13 @@ class SubscriptionCreateRequest(BaseModel):
     config_json: dict[str, Any] = {}
 
 
+class SubscriptionUpdateRequest(BaseModel):
+    target_type: Literal["room", "webhook"] | None = None
+    target_ref: str | None = None
+    config_json: dict[str, Any] | None = None
+    is_active: bool | None = None
+
+
 class SubscriptionRead(BaseModel):
     id: int
     channel_id: int
@@ -58,6 +65,9 @@ class EventsProvider(Protocol):
         ...
 
     async def create_subscription(self, context, channel_id: int, payload: SubscriptionCreateRequest) -> SubscriptionRead:
+        ...
+
+    async def update_subscription(self, context, subscription_id: int, payload: SubscriptionUpdateRequest) -> SubscriptionRead:
         ...
 
     async def publish(self, context, channel_id: int, payload: EventPublishRequest) -> list[DeliveryRead]:
