@@ -4,7 +4,9 @@ from datetime import datetime
 from typing import Any, Protocol
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from src.postbase.platform.contracts import ProviderAdapter
 
 
 class ChannelCreateRequest(BaseModel):
@@ -21,7 +23,7 @@ class ChannelRead(BaseModel):
 class SubscriptionCreateRequest(BaseModel):
     target_type: Literal["room", "webhook"]
     target_ref: str
-    config_json: dict[str, Any] = {}
+    config_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class SubscriptionUpdateRequest(BaseModel):
@@ -42,7 +44,7 @@ class SubscriptionRead(BaseModel):
 
 class EventPublishRequest(BaseModel):
     event_name: str
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class DeliveryRead(BaseModel):
@@ -57,7 +59,7 @@ class DeliveryRead(BaseModel):
     payload_json: dict[str, Any]
 
 
-class EventsProvider(Protocol):
+class EventsProvider(ProviderAdapter, Protocol):
     async def create_channel(self, context, payload: ChannelCreateRequest) -> ChannelRead:
         ...
 

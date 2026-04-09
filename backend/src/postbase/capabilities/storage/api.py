@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends
 
+from src.postbase.capabilities.contracts import FacadeStatusResponse
 from src.postbase.capabilities.storage.contracts import SignedUrlResponse, StorageFileResponse, StorageUploadRequest
-from src.postbase.capabilities.storage.dependencies import get_access_context, get_storage_provider
+from src.postbase.capabilities.storage.dependencies import get_access_context, get_storage_facade, get_storage_provider
+from src.postbase.capabilities.storage.service import StorageFacade
 
 router = APIRouter(prefix="/storage", tags=["postbase-storage"])
 
@@ -40,3 +42,11 @@ async def delete_file(
     provider=Depends(get_storage_provider),
 ) -> None:
     await provider.delete_file(context, file_id)
+
+
+@router.get("/status", response_model=FacadeStatusResponse)
+async def storage_status(
+    context=Depends(get_access_context),
+    facade: StorageFacade = Depends(get_storage_facade),
+) -> FacadeStatusResponse:
+    return await facade.status(context)

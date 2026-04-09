@@ -4,9 +4,11 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from src.postbase.platform.contracts import ProviderAdapter
+
 
 class DataMutationPayload(BaseModel):
-    values: dict[str, Any]
+    values: dict[str, Any] = Field(default_factory=dict)
 
 
 class DataQueryRequest(BaseModel):
@@ -23,14 +25,26 @@ class DataQueryResult(BaseModel):
     rows: list[dict[str, Any]]
 
 
-class DataProvider(Protocol):
+class DataMutationResult(BaseModel):
+    success: bool
+    row_id: int | None = None
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class DataProvider(ProviderAdapter, Protocol):
     async def query_rows(self, context, payload: DataQueryRequest) -> DataQueryResult:
         ...
 
     async def list_rows(self, context, namespace: str, table: str) -> DataQueryResult:
         ...
 
-    async def create_row(self, context, namespace: str, table: str, payload: DataMutationPayload) -> dict[str, Any]:
+    async def create_row(
+        self,
+        context,
+        namespace: str,
+        table: str,
+        payload: DataMutationPayload,
+    ) -> DataMutationResult:
         ...
 
     async def update_row(
@@ -40,7 +54,7 @@ class DataProvider(Protocol):
         table: str,
         row_id: int,
         payload: DataMutationPayload,
-    ) -> dict[str, Any]:
+    ) -> DataMutationResult:
         ...
 
     async def delete_row(self, context, namespace: str, table: str, row_id: int) -> None:

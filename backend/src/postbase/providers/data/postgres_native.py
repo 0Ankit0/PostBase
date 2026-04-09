@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from src.postbase.capabilities.data.contracts import DataMutationPayload, DataQueryRequest, DataQueryResult
+from src.postbase.capabilities.data.contracts import DataMutationPayload, DataMutationResult, DataQueryRequest, DataQueryResult
 from src.postbase.domain.enums import CapabilityKey, PolicyMode
 from src.postbase.domain.models import DataNamespace, TableDefinition
 from src.postbase.platform.access import PostBaseAccessContext, validate_identifier
@@ -100,7 +100,7 @@ class PostgresNativeDataProvider:
         namespace: str,
         table: str,
         payload: DataMutationPayload,
-    ) -> dict[str, Any]:
+    ) -> DataMutationResult:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         namespace_row, table_row = await self._resolve_table(db, context, namespace, table)
         values = dict(payload.values)
@@ -119,7 +119,7 @@ class PostgresNativeDataProvider:
             metric_key="create_row",
         )
         await db.commit()
-        return {"created": True, "values": values}
+        return DataMutationResult(success=True, values=values)
 
     async def update_row(
         self,
@@ -128,7 +128,7 @@ class PostgresNativeDataProvider:
         table: str,
         row_id: int,
         payload: DataMutationPayload,
-    ) -> dict[str, Any]:
+    ) -> DataMutationResult:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         namespace_row, table_row = await self._resolve_table(db, context, namespace, table)
         values = dict(payload.values)
@@ -147,7 +147,7 @@ class PostgresNativeDataProvider:
             metric_key="update_row",
         )
         await db.commit()
-        return {"updated": True, "row_id": row_id}
+        return DataMutationResult(success=True, row_id=row_id, values=values)
 
     async def delete_row(self, context: PostBaseAccessContext, namespace: str, table: str, row_id: int) -> None:
         db: AsyncSession = context.db  # type: ignore[attr-defined]

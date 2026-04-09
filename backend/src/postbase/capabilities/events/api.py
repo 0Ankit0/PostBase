@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 
+from src.postbase.capabilities.contracts import FacadeStatusResponse
 from src.postbase.capabilities.events.contracts import (
     ChannelCreateRequest,
     ChannelRead,
@@ -9,7 +10,8 @@ from src.postbase.capabilities.events.contracts import (
     SubscriptionRead,
     SubscriptionUpdateRequest,
 )
-from src.postbase.capabilities.events.dependencies import get_access_context, get_events_provider
+from src.postbase.capabilities.events.dependencies import get_access_context, get_events_facade, get_events_provider
+from src.postbase.capabilities.events.service import EventsFacade
 
 router = APIRouter(prefix="/events", tags=["postbase-events"])
 
@@ -59,3 +61,11 @@ async def publish_event(
     provider=Depends(get_events_provider),
 ) -> list[DeliveryRead]:
     return await provider.publish(context, channel_id, payload)
+
+
+@router.get("/status", response_model=FacadeStatusResponse)
+async def events_status(
+    context=Depends(get_access_context),
+    facade: EventsFacade = Depends(get_events_facade),
+) -> FacadeStatusResponse:
+    return await facade.status(context)

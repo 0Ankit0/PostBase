@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, Header
 
+from src.postbase.capabilities.contracts import FacadeStatusResponse
 from src.postbase.capabilities.functions.contracts import (
     ExecutionRead,
     FunctionCreateRequest,
     FunctionInvokeRequest,
     FunctionRead,
 )
-from src.postbase.capabilities.functions.dependencies import get_access_context, get_functions_provider
+from src.postbase.capabilities.functions.dependencies import get_access_context, get_functions_facade, get_functions_provider
+from src.postbase.capabilities.functions.service import FunctionsFacade
 
 router = APIRouter(prefix="/functions", tags=["postbase-functions"])
 
@@ -55,3 +57,11 @@ async def list_executions(
     provider=Depends(get_functions_provider),
 ) -> list[ExecutionRead]:
     return await provider.list_executions(context, function_id)
+
+
+@router.get("/status", response_model=FacadeStatusResponse)
+async def functions_status(
+    context=Depends(get_access_context),
+    facade: FunctionsFacade = Depends(get_functions_facade),
+) -> FacadeStatusResponse:
+    return await facade.status(context)

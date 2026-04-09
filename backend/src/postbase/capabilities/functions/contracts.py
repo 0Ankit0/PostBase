@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from src.postbase.platform.contracts import ProviderAdapter
 
 
 class FunctionCreateRequest(BaseModel):
@@ -11,7 +13,7 @@ class FunctionCreateRequest(BaseModel):
     name: str
     handler_type: str = "echo"
     runtime_profile: str = "celery-runtime"
-    config_json: dict[str, Any] = {}
+    config_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class FunctionRead(BaseModel):
@@ -25,7 +27,7 @@ class FunctionRead(BaseModel):
 
 
 class FunctionInvokeRequest(BaseModel):
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)
     invocation_type: str = "sync"
     timeout_ms: int | None = None
     cancel_requested: bool = False
@@ -51,7 +53,7 @@ class ExecutionRead(BaseModel):
     log_excerpt: str
 
 
-class FunctionsProvider(Protocol):
+class FunctionsProvider(ProviderAdapter, Protocol):
     async def create_function(self, context, payload: FunctionCreateRequest) -> FunctionRead:
         ...
 

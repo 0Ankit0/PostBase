@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
+
+from src.postbase.platform.contracts import ProviderAdapter
 
 
 class AuthSignupRequest(BaseModel):
@@ -14,6 +16,10 @@ class AuthSignupRequest(BaseModel):
 class AuthLoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class AuthRefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
 
 
 class AuthTokens(BaseModel):
@@ -31,7 +37,12 @@ class AuthCurrentUser(BaseModel):
     is_active: bool
 
 
-class AuthProvider(Protocol):
+class AuthSessionResponse(BaseModel):
+    user: AuthCurrentUser
+    tokens: AuthTokens
+
+
+class AuthProvider(ProviderAdapter, Protocol):
     async def signup(self, context, payload: AuthSignupRequest) -> tuple[AuthCurrentUser, AuthTokens]:
         ...
 

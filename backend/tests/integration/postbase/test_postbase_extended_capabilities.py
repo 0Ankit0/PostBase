@@ -97,6 +97,36 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
     access_token = auth_signup_response.json()["tokens"]["access_token"]
     user_headers = {"Authorization": f"Bearer {access_token}"}
 
+    namespace_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces",
+        headers=owner_headers,
+        json={"name": "runtime"},
+    )
+    assert namespace_response.status_code == 201, namespace_response.text
+
+    table_response = await client.post(
+        f"/api/v1/environments/{environment_id}/data/namespaces/{namespace_response.json()['id']}/tables",
+        headers=owner_headers,
+        json={
+            "table_name": "notes",
+            "columns": [
+                {"name": "title", "type": "string", "nullable": False},
+                {"name": "auth_user_id", "type": "integer", "nullable": False},
+            ],
+            "policy_mode": "owner",
+            "owner_column": "auth_user_id",
+        },
+    )
+    assert table_response.status_code == 201, table_response.text
+
+    create_data_row_response = await client.post(
+        "/api/v1/data/runtime/notes",
+        headers=user_headers,
+        json={"values": {"title": "facade-cross-flow"}},
+    )
+    assert create_data_row_response.status_code == 200, create_data_row_response.text
+    assert create_data_row_response.json()["success"] is True
+
     upload_response = await client.post(
         "/api/v1/storage/files",
         headers=user_headers,
@@ -197,6 +227,12 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
     assert len(deliveries) == 2
     assert all("attempt_count" in item for item in deliveries)
     assert any(item["status"] == "delivered" for item in deliveries)
+
+    for endpoint in ("/api/v1/auth/status", "/api/v1/data/status", "/api/v1/storage/status", "/api/v1/functions/status", "/api/v1/events/status"):
+        status_response = await client.get(endpoint, headers=user_headers)
+        assert status_response.status_code == 200, status_response.text
+        assert status_response.json()["status"] in {"ready", "degraded", "error"}
+        assert "reason" in status_response.json()
 
     health_response = await client.get(
         f"/api/v1/environments/{environment_id}/reports/capability-health",
