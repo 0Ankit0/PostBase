@@ -1,7 +1,8 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
+import { useAuthStore } from '@/store/auth-store';
 import type {
   PaginatedResponse,
   PostBaseBindingRead,
@@ -20,9 +21,15 @@ import type {
   PostBaseWebhookRecoveryResult,
 } from '@/types';
 
+export function resolvePostBaseContextKey(tenantId: string | null | undefined): string {
+  return tenantId ?? 'personal';
+}
+
 export function usePostBaseProviderCatalog() {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'provider-catalog'],
+    queryKey: ['postbase', tenantId, 'provider-catalog'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseProviderCatalogRead[]>('/provider-catalog');
       return response.data;
@@ -32,19 +39,28 @@ export function usePostBaseProviderCatalog() {
 }
 
 export function usePostBaseProjects() {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'projects'],
+    queryKey: ['postbase', tenantId, 'projects'],
     queryFn: async () => {
       const response = await apiClient.get<PaginatedResponse<PostBaseProjectRead>>('/projects');
       return response.data;
     },
+    networkMode: 'offlineFirst',
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 10_000),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: true,
     staleTime: 30_000,
   });
 }
 
 export function usePostBaseEnvironments(projectId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'projects', projectId, 'environments'],
+    queryKey: ['postbase', tenantId, 'projects', projectId, 'environments'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseEnvironmentRead[]>(`/projects/${projectId}/environments`);
       return response.data;
@@ -55,8 +71,10 @@ export function usePostBaseEnvironments(projectId: string | undefined) {
 }
 
 export function usePostBaseBindings(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'environments', environmentId, 'bindings'],
+    queryKey: ['postbase', tenantId, 'environments', environmentId, 'bindings'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseBindingRead[]>(`/environments/${environmentId}/bindings`);
       return response.data;
@@ -67,8 +85,10 @@ export function usePostBaseBindings(environmentId: string | undefined) {
 }
 
 export function usePostBaseSecrets(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'environments', environmentId, 'secrets'],
+    queryKey: ['postbase', tenantId, 'environments', environmentId, 'secrets'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseSecretRead[]>(`/environments/${environmentId}/secrets`);
       return response.data;
@@ -105,20 +125,30 @@ export interface PostBaseSwitchoverCreatePayload {
 }
 
 export function usePostBaseProjectOverview(projectId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'projects', projectId, 'overview'],
+    queryKey: ['postbase', tenantId, 'projects', projectId, 'overview'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseProjectOverview>(`/projects/${projectId}/overview`);
       return response.data;
     },
     enabled: Boolean(projectId),
+    networkMode: 'offlineFirst',
+    placeholderData: keepPreviousData,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 10_000),
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: true,
     staleTime: 15_000,
   });
 }
 
 export function usePostBaseUsage(projectId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'projects', projectId, 'usage'],
+    queryKey: ['postbase', tenantId, 'projects', projectId, 'usage'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseUsageMeterRead[]>(`/projects/${projectId}/usage`);
       return response.data;
@@ -129,8 +159,10 @@ export function usePostBaseUsage(projectId: string | undefined) {
 }
 
 export function usePostBaseCapabilityHealth(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'environments', environmentId, 'health'],
+    queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseCapabilityHealthReport>(
         `/environments/${environmentId}/reports/capability-health`,
@@ -138,13 +170,21 @@ export function usePostBaseCapabilityHealth(environmentId: string | undefined) {
       return response.data;
     },
     enabled: Boolean(environmentId),
+    networkMode: 'offlineFirst',
+    placeholderData: keepPreviousData,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 10_000),
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: true,
     staleTime: 15_000,
   });
 }
 
 export function usePostBaseMigrations(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'environments', environmentId, 'migrations'],
+    queryKey: ['postbase', tenantId, 'environments', environmentId, 'migrations'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseMigrationRead[]>(`/environments/${environmentId}/migrations`);
       return response.data;
@@ -156,8 +196,9 @@ export function usePostBaseMigrations(environmentId: string | undefined) {
 }
 
 export function useApplyPostBaseMigration(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
-  const queryKey = ['postbase', 'environments', environmentId, 'migrations'] as const;
+  const queryKey = ['postbase', tenantId, 'environments', environmentId, 'migrations'] as const;
 
   return useMutation({
     mutationFn: async (migrationId: string) => {
@@ -181,14 +222,15 @@ export function useApplyPostBaseMigration(environmentId: string | undefined) {
       queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
         current.map((item) => (item.id === migration.id ? migration : item)),
       );
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
     },
   });
 }
 
 export function useRetryPostBaseMigration(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
-  const queryKey = ['postbase', 'environments', environmentId, 'migrations'] as const;
+  const queryKey = ['postbase', tenantId, 'environments', environmentId, 'migrations'] as const;
 
   return useMutation({
     mutationFn: async (migrationId: string) => {
@@ -214,14 +256,16 @@ export function useRetryPostBaseMigration(environmentId: string | undefined) {
       queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
         current.map((item) => (item.id === result.migration.id ? result.migration : item)),
       );
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
     },
   });
 }
 
 export function usePostBaseBindingSwitchovers(bindingId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+
   return useQuery({
-    queryKey: ['postbase', 'bindings', bindingId, 'switchovers'],
+    queryKey: ['postbase', tenantId, 'bindings', bindingId, 'switchovers'],
     queryFn: async () => {
       const response = await apiClient.get<PostBaseSwitchoverRead[]>(`/bindings/${bindingId}/switchovers`);
       return response.data;
@@ -232,8 +276,9 @@ export function usePostBaseBindingSwitchovers(bindingId: string | undefined) {
 }
 
 export function useExecutePostBaseSwitchover(bindingId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
-  const queryKey = ['postbase', 'bindings', bindingId, 'switchovers'] as const;
+  const queryKey = ['postbase', tenantId, 'bindings', bindingId, 'switchovers'] as const;
 
   return useMutation({
     mutationFn: async (switchoverId: string) => {
@@ -257,14 +302,15 @@ export function useExecutePostBaseSwitchover(bindingId: string | undefined) {
       queryClient.setQueryData<PostBaseSwitchoverRead[]>(queryKey, (current = []) =>
         current.map((item) => (item.id === switchover.id ? switchover : item)),
       );
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', undefined, 'bindings'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'projects'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', undefined, 'bindings'] });
     },
   });
 }
 
 export function useCreatePostBaseSecret(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: PostBaseSecretCreatePayload) => {
@@ -272,19 +318,20 @@ export function useCreatePostBaseSecret(environmentId: string | undefined) {
       return response.data;
     },
     onSuccess: async (secret) => {
-      queryClient.setQueryData<PostBaseSecretRead[]>(['postbase', 'environments', environmentId, 'secrets'], (current = []) => [
+      queryClient.setQueryData<PostBaseSecretRead[]>(['postbase', tenantId, 'environments', environmentId, 'secrets'], (current = []) => [
         secret,
         ...current,
       ]);
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'projects'] });
     },
   });
 }
 
 export function useRotatePostBaseSecret(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
-  const queryKey = ['postbase', 'environments', environmentId, 'secrets'] as const;
+  const queryKey = ['postbase', tenantId, 'environments', environmentId, 'secrets'] as const;
 
   return useMutation({
     mutationFn: async ({ secretId, secretValue }: { secretId: string; secretValue: string }) => {
@@ -311,14 +358,15 @@ export function useRotatePostBaseSecret(environmentId: string | undefined) {
       queryClient.setQueryData<PostBaseSecretRead[]>(queryKey, (current = []) =>
         current.map((item) => (item.id === result.secret.id ? result.secret : item)),
       );
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
     },
   });
 }
 
 export function useDeactivatePostBaseSecret(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
-  const queryKey = ['postbase', 'environments', environmentId, 'secrets'] as const;
+  const queryKey = ['postbase', tenantId, 'environments', environmentId, 'secrets'] as const;
 
   return useMutation({
     mutationFn: async (secretId: string) => {
@@ -340,12 +388,13 @@ export function useDeactivatePostBaseSecret(environmentId: string | undefined) {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
     },
   });
 }
 
 export function useCreatePostBaseBinding(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: PostBaseBindingCreatePayload) => {
@@ -353,19 +402,20 @@ export function useCreatePostBaseBinding(environmentId: string | undefined) {
       return response.data;
     },
     onSuccess: async (binding) => {
-      queryClient.setQueryData<PostBaseBindingRead[]>(['postbase', 'environments', environmentId, 'bindings'], (current = []) => [
+      queryClient.setQueryData<PostBaseBindingRead[]>(['postbase', tenantId, 'environments', environmentId, 'bindings'], (current = []) => [
         binding,
         ...current,
       ]);
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'projects'] });
     },
   });
 }
 
 export function useUpdatePostBaseBindingStatus(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
-  const queryKey = ['postbase', 'environments', environmentId, 'bindings'] as const;
+  const queryKey = ['postbase', tenantId, 'environments', environmentId, 'bindings'] as const;
 
   return useMutation({
     mutationFn: async ({ bindingId, payload }: { bindingId: string; payload: PostBaseBindingStatusPayload }) => {
@@ -391,13 +441,14 @@ export function useUpdatePostBaseBindingStatus(environmentId: string | undefined
       queryClient.setQueryData<PostBaseBindingRead[]>(queryKey, (current = []) =>
         current.map((item) => (item.id === binding.id ? binding : item)),
       );
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'projects'] });
     },
   });
 }
 
 export function useCreatePostBaseSwitchover(bindingId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: PostBaseSwitchoverCreatePayload) => {
@@ -405,16 +456,17 @@ export function useCreatePostBaseSwitchover(bindingId: string | undefined) {
       return response.data;
     },
     onSuccess: async (switchover) => {
-      queryClient.setQueryData<PostBaseSwitchoverRead[]>(['postbase', 'bindings', bindingId, 'switchovers'], (current = []) => [
+      queryClient.setQueryData<PostBaseSwitchoverRead[]>(['postbase', tenantId, 'bindings', bindingId, 'switchovers'], (current = []) => [
         switchover,
         ...current,
       ]);
-      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId] });
     },
   });
 }
 
 export function useDrainPostBaseWebhooks(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (limit: number = 200) => {
@@ -424,14 +476,15 @@ export function useDrainPostBaseWebhooks(environmentId: string | undefined) {
       return response.data;
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'migrations'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'migrations'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId] });
     },
   });
 }
 
 export function useRecoverPostBaseWebhooks(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (limit: number = 200) => {
@@ -441,16 +494,17 @@ export function useRecoverPostBaseWebhooks(environmentId: string | undefined) {
       return response.data;
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'migrations'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'migrations'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId] });
     },
   });
 }
 
 export function useReconcilePostBaseMigration(environmentId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
   const queryClient = useQueryClient();
-  const queryKey = ['postbase', 'environments', environmentId, 'migrations'] as const;
+  const queryKey = ['postbase', tenantId, 'environments', environmentId, 'migrations'] as const;
 
   return useMutation({
     mutationFn: async (migrationId: string) => {
@@ -463,8 +517,8 @@ export function useReconcilePostBaseMigration(environmentId: string | undefined)
       queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
         current.map((item) => (item.id === migration.id ? migration : item)),
       );
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
-      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId] });
     },
   });
 }

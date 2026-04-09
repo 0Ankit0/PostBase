@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { ChevronsUpDown, Check, Building2, Plus } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/auth-store';
 import { useTenants, useSwitchTenant } from '@/hooks/use-tenants';
 import type { Tenant } from '@/types';
@@ -32,6 +33,7 @@ export function OrgSwitcher() {
   const { tenant: activeTenant, setTenant } = useAuthStore();
   const { data } = useTenants({ limit: 50 });
   const switchTenant = useSwitchTenant();
+  const queryClient = useQueryClient();
 
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -53,6 +55,8 @@ export function OrgSwitcher() {
 
   const handlePersonal = () => {
     setTenant(null);
+    queryClient.removeQueries({ queryKey: ['postbase'] });
+    queryClient.invalidateQueries({ queryKey: ['postbase', 'personal'] });
     setOpen(false);
   };
 

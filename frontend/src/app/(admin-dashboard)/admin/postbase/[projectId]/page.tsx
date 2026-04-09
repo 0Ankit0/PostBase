@@ -39,12 +39,15 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const { projectId } = params;
 
   const { data: providerCatalog } = usePostBaseProviderCatalog();
-  const { data: environments } = usePostBaseEnvironments(projectId);
-  const { data: overview } = usePostBaseProjectOverview(projectId);
+  const environmentsQuery = usePostBaseEnvironments(projectId);
+  const overviewQuery = usePostBaseProjectOverview(projectId);
+  const { data: environments } = environmentsQuery;
+  const { data: overview } = overviewQuery;
   const { data: usage } = usePostBaseUsage(projectId);
 
   const primaryEnvironment = environments?.[0];
-  const { data: health } = usePostBaseCapabilityHealth(primaryEnvironment?.id);
+  const healthQuery = usePostBaseCapabilityHealth(primaryEnvironment?.id);
+  const { data: health } = healthQuery;
   const { data: bindings } = usePostBaseBindings(primaryEnvironment?.id);
   const { data: secrets } = usePostBaseSecrets(primaryEnvironment?.id);
   const { data: migrations } = usePostBaseMigrations(primaryEnvironment?.id);
@@ -96,6 +99,38 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         <MetricCard label="Usage total" value={Math.round(overview?.usage_points_total ?? 0)} />
       </div>
 
+      {(overviewQuery.isPending || environmentsQuery.isPending) && (
+        <Card>
+          <CardContent className="pt-6 text-sm text-gray-500">Loading project overview and health snapshots…</CardContent>
+        </Card>
+      )}
+
+      {overviewQuery.isError && !overview && (
+        <QueryErrorCard
+          title="Unable to load platform overview"
+          message={extractMutationError(overviewQuery.error)}
+          onRetry={() => void overviewQuery.refetch()}
+        />
+      )}
+
+      {healthQuery.isError && !health && (
+        <QueryErrorCard
+          title="Unable to load capability health"
+          message={extractMutationError(healthQuery.error)}
+          onRetry={() => void healthQuery.refetch()}
+        />
+      )}
+
+      {(overviewQuery.isRefetchError && overview) || (healthQuery.isRefetchError && health) ? (
+        <StaleDataBanner
+          label="Showing cached platform snapshot while polling recovers."
+          onRetry={() => {
+            void overviewQuery.refetch();
+            void healthQuery.refetch();
+          }}
+        />
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Environment readiness</CardTitle>
@@ -105,9 +140,8 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
             <div key={env.environment_id} className="rounded border border-gray-200 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="font-medium text-gray-900">{env.environment_id}</div>
-                <div className="text-xs text-gray-500">
-                  {env.stage} · {env.status} · {env.readiness_state}
-                </div>
+                <StatusPill value={env.status} type="status" />
+                <StatusPill value={env.readiness_state} type="readiness" />
               </div>
               <p className="mt-2 text-gray-600">{env.readiness_detail || 'No readiness details reported.'}</p>
               {!isReadinessHealthy(env.readiness_state) && (
@@ -229,11 +263,10 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                 <div className="font-medium text-gray-900">
                   {item.capability_key} → {item.provider_key}
                 </div>
-                <div className="text-xs text-gray-500">
-                  {item.ready ? 'ready' : 'degraded'} · {item.detail}
-                </div>
+                <div className="text-xs text-gray-500">{item.ready ? 'ready' : 'degraded'} · {item.detail || 'Unknown detail'}</div>
               </div>
             ))}
+            {(health?.provider_health ?? []).length === 0 && <p className="text-xs text-gray-500">Health state unknown: no provider report available yet.</p>}
           </CardContent>
         </Card>
 
@@ -348,9 +381,77 @@ function MetricCard({ label, value }: { label: string; value: number }) {
   );
 }
 
+function QueryErrorCard({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <p className="rounded border border-red-200 bg-red-50 p-2 text-red-700">{message}</p>
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          Retry
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function StaleDataBanner({ label, onRetry }: { label: string; onRetry: () => void }) {
+  return (
+    <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+      <div className="flex items-center justify-between gap-2">
+        <p>{label}</p>
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          Retry now
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({ value, type }: { value: string; type: 'status' | 'readiness' }) {
+  const normalized = normalizeStatus(value);
+  const tone = getStatusTone(normalized, type);
+  return (
+    <span className={`rounded px-2 py-0.5 text-xs ${tone}`}>{normalized}</span>
+  );
+}
+
+function normalizeStatus(value: string | null | undefined): string {
+  if (!value || value.trim().length === 0) return 'unknown';
+  return value.toLowerCase();
+}
+
+function getStatusTone(value: string, type: 'status' | 'readiness'): string {
+  if (value === 'degraded' || value === 'not_ready') return 'border border-amber-200 bg-amber-50 text-amber-800';
+  if (value === 'ready' || value === 'active') return 'border border-green-200 bg-green-50 text-green-800';
+  if (value === 'inactive' || value === 'failed') return 'border border-red-200 bg-red-50 text-red-800';
+  return type === 'readiness'
+    ? 'border border-slate-200 bg-slate-100 text-slate-700'
+    : 'border border-gray-200 bg-gray-100 text-gray-700';
+}
+
 interface ReadinessRemediation {
   reason: string;
   remediation: string;
+}
+
+export type QuerySurfaceState = 'loading' | 'error' | 'stale-cache' | 'success';
+
+export function deriveQuerySurfaceState({
+  isPending,
+  isError,
+  hasData,
+}: {
+  isPending: boolean;
+  isError: boolean;
+  hasData: boolean;
+}): QuerySurfaceState {
+  if (isPending && !hasData) return 'loading';
+  if (isError && hasData) return 'stale-cache';
+  if (isError) return 'error';
+  return 'success';
 }
 
 const READINESS_REMEDIATION_RULES: Array<{ keywords: string[]; remediation: ReadinessRemediation }> = [
