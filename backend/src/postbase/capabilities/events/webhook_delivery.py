@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 
 
 @dataclass
 class WebhookDeliveryResult:
     status: str
-    attempt_count: int
+    response_code: int | None
+    latency_ms: int
     error_text: str
 
 
@@ -15,7 +17,7 @@ async def deliver_webhook(
     target_ref: str,
     event_name: str,
     payload: dict,
-    max_attempts: int = 3,
+    attempt_number: int,
 ) -> WebhookDeliveryResult:
     """Best-effort webhook deliverer abstraction.
 
@@ -26,11 +28,40 @@ async def deliver_webhook(
 
     _ = (event_name, payload)
 
-    if "fail" in target_ref:
+    start = perf_counter()
+    _ = (event_name, payload)
+
+    if "permanent-fail" in target_ref:
+        latency_ms = int((perf_counter() - start) * 1000)
         return WebhookDeliveryResult(
             status="failed",
-            attempt_count=max_attempts,
-            error_text="webhook delivery failed after retries",
+            response_code=500,
+            latency_ms=latency_ms,
+            error_text="permanent upstream failure",
         )
 
-    return WebhookDeliveryResult(status="delivered", attempt_count=1, error_text="")
+    if "transient-fail" in target_ref and attempt_number == 1:
+        latency_ms = int((perf_counter() - start) * 1000)
+        return WebhookDeliveryResult(
+            status="failed",
+            response_code=503,
+            latency_ms=latency_ms,
+            error_text="transient upstream failure",
+        )
+
+    if "fail" in target_ref:
+        latency_ms = int((perf_counter() - start) * 1000)
+        return WebhookDeliveryResult(
+            status="failed",
+            response_code=500,
+            latency_ms=latency_ms,
+            error_text="webhook delivery failed",
+        )
+
+    latency_ms = int((perf_counter() - start) * 1000)
+    return WebhookDeliveryResult(
+        status="delivered",
+        response_code=200,
+        latency_ms=latency_ms,
+        error_text="",
+    )

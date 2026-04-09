@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.postbase.capabilities.events.webhook_delivery import deliver_webhook
-from src.postbase.domain.models import DeliveryRecord, WebhookDeliveryJob
+from src.postbase.domain.models import DeadLetterWebhookDelivery, DeliveryRecord, WebhookDeliveryJob
 
 
 def _next_attempt_time(attempt_count: int) -> datetime:
@@ -70,10 +70,22 @@ async def process_due_webhook_jobs(
             target_ref=job.target_ref,
             event_name=job.event_name,
             payload=job.payload_json,
-            max_attempts=1,
+            attempt_number=job.attempt_count + 1,
         )
         job.attempt_count += 1
         job.error_text = result.error_text
+        job.latest_response_code = result.response_code
+        job.latest_latency_ms = result.latency_ms
+        job.attempt_history_json = [
+            *job.attempt_history_json,
+            {
+                "attempt_number": job.attempt_count,
+                "response_code": result.response_code,
+                "latency_ms": result.latency_ms,
+                "error_text": result.error_text,
+                "attempted_at": now.isoformat(),
+            },
+        ]
         job.updated_at = now
 
         if result.status == "delivered":
@@ -84,8 +96,24 @@ async def process_due_webhook_jobs(
             delivered_at = now
             error_text = ""
         elif job.attempt_count >= job.max_attempts:
-            job.status = "failed"
+            job.status = "dead_lettered"
             job.next_attempt_at = None
+            db.add(
+                DeadLetterWebhookDelivery(
+                    webhook_delivery_job_id=job.id,
+                    channel_id=job.channel_id,
+                    subscription_id=job.subscription_id,
+                    event_name=job.event_name,
+                    payload_json=job.payload_json,
+                    target_ref=job.target_ref,
+                    attempt_count=job.attempt_count,
+                    max_attempts=job.max_attempts,
+                    latest_response_code=job.latest_response_code,
+                    latest_latency_ms=job.latest_latency_ms,
+                    error_text=result.error_text or "webhook delivery failed after retries",
+                    attempt_history_json=job.attempt_history_json,
+                )
+            )
             delivery_status = "failed"
             delivered_at = None
             error_text = result.error_text or "webhook delivery failed after retries"
@@ -111,3 +139,31 @@ async def process_due_webhook_jobs(
 
     await db.flush()
     return delivery_records
+
+
+async def replay_dead_letter_webhook_jobs(
+    db: AsyncSession,
+    *,
+    limit: int = 200,
+) -> list[DeadLetterWebhookDelivery]:
+    dead_letters = (
+        await db.execute(
+            select(DeadLetterWebhookDelivery)
+            .where(DeadLetterWebhookDelivery.dead_letter_state == "active")
+            .order_by(DeadLetterWebhookDelivery.dead_lettered_at.asc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    now = datetime.now(timezone.utc)
+    for dead_letter in dead_letters:
+        job = await db.get(WebhookDeliveryJob, dead_letter.webhook_delivery_job_id)
+        if job is None:
+            continue
+        job.status = "retrying"
+        job.next_attempt_at = now
+        job.error_text = "operator initiated replay from dead-letter queue"
+        job.updated_at = now
+        dead_letter.dead_letter_state = "replayed"
+        dead_letter.replayed_at = now
+    await db.flush()
+    return dead_letters
