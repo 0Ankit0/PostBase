@@ -1,18 +1,19 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 import type {
   PaginatedResponse,
   PostBaseBindingRead,
   PostBaseCapabilityHealthReport,
   PostBaseEnvironmentRead,
+  PostBaseMigrationRead,
+  PostBaseMigrationRetryResult,
   PostBaseProjectOverview,
   PostBaseProjectRead,
   PostBaseProviderCatalogRead,
   PostBaseSecretRead,
-  PostBaseMigrationRead,
+  PostBaseSecretRotateResult,
   PostBaseSwitchoverRead,
   PostBaseUsageMeterRead,
   PostBaseWebhookDrainResult,
@@ -76,8 +77,6 @@ export function usePostBaseSecrets(environmentId: string | undefined) {
   });
 }
 
-
-
 export interface PostBaseSecretCreatePayload {
   name: string;
   provider_key: string;
@@ -93,9 +92,15 @@ export interface PostBaseBindingCreatePayload {
   region?: string | null;
 }
 
+export interface PostBaseBindingStatusPayload {
+  status: PostBaseBindingRead['status'];
+  reason?: string;
+}
+
 export interface PostBaseSwitchoverCreatePayload {
   target_provider_key: string;
   strategy?: string;
+  retirement_strategy?: string;
 }
 
 export function usePostBaseProjectOverview(projectId: string | undefined) {
@@ -140,9 +145,7 @@ export function usePostBaseMigrations(environmentId: string | undefined) {
   return useQuery({
     queryKey: ['postbase', 'environments', environmentId, 'migrations'],
     queryFn: async () => {
-      const response = await apiClient.get<PostBaseMigrationRead[]>(
-        `/environments/${environmentId}/migrations`,
-      );
+      const response = await apiClient.get<PostBaseMigrationRead[]>(`/environments/${environmentId}/migrations`);
       return response.data;
     },
     enabled: Boolean(environmentId),
@@ -152,20 +155,64 @@ export function usePostBaseMigrations(environmentId: string | undefined) {
 
 export function useApplyPostBaseMigration(environmentId: string | undefined) {
   const queryClient = useQueryClient();
+  const queryKey = ['postbase', 'environments', environmentId, 'migrations'] as const;
+
   return useMutation({
     mutationFn: async (migrationId: string) => {
-      const response = await apiClient.post<PostBaseMigrationRead>(
-        `/environments/${environmentId}/migrations/${migrationId}/apply`,
+      const response = await apiClient.post<PostBaseMigrationRead>(`/environments/${environmentId}/migrations/${migrationId}/apply`);
+      return response.data;
+    },
+    onMutate: async (migrationId) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<PostBaseMigrationRead[]>(queryKey);
+      queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === migrationId ? { ...item, status: 'pending' } : item)),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKey, context.previous);
+      }
+    },
+    onSuccess: async (migration) => {
+      queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === migration.id ? migration : item)),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+    },
+  });
+}
+
+export function useRetryPostBaseMigration(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  const queryKey = ['postbase', 'environments', environmentId, 'migrations'] as const;
+
+  return useMutation({
+    mutationFn: async (migrationId: string) => {
+      const response = await apiClient.post<PostBaseMigrationRetryResult>(
+        `/environments/${environmentId}/migrations/${migrationId}/retry`,
       );
       return response.data;
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ['postbase', 'environments', environmentId, 'migrations'],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ['postbase', 'environments', environmentId, 'health'],
-      });
+    onMutate: async (migrationId) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<PostBaseMigrationRead[]>(queryKey);
+      queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === migrationId ? { ...item, status: 'pending' } : item)),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKey, context.previous);
+      }
+    },
+    onSuccess: async (result) => {
+      queryClient.setQueryData<PostBaseMigrationRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === result.migration.id ? result.migration : item)),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
     },
   });
 }
@@ -174,9 +221,7 @@ export function usePostBaseBindingSwitchovers(bindingId: string | undefined) {
   return useQuery({
     queryKey: ['postbase', 'bindings', bindingId, 'switchovers'],
     queryFn: async () => {
-      const response = await apiClient.get<PostBaseSwitchoverRead[]>(
-        `/bindings/${bindingId}/switchovers`,
-      );
+      const response = await apiClient.get<PostBaseSwitchoverRead[]>(`/bindings/${bindingId}/switchovers`);
       return response.data;
     },
     enabled: Boolean(bindingId),
@@ -184,26 +229,38 @@ export function usePostBaseBindingSwitchovers(bindingId: string | undefined) {
   });
 }
 
-export function useExecutePostBaseSwitchover() {
+export function useExecutePostBaseSwitchover(bindingId: string | undefined) {
   const queryClient = useQueryClient();
+  const queryKey = ['postbase', 'bindings', bindingId, 'switchovers'] as const;
+
   return useMutation({
     mutationFn: async (switchoverId: string) => {
-      const response = await apiClient.post<PostBaseSwitchoverRead>(
-        `/switchovers/${switchoverId}/execute`,
-      );
+      const response = await apiClient.post<PostBaseSwitchoverRead>(`/switchovers/${switchoverId}/execute`);
       return response.data;
     },
-    onSuccess: async (_, switchoverId) => {
-      await queryClient.invalidateQueries({
-        queryKey: ['postbase', 'switchovers', switchoverId],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ['postbase'],
-      });
+    onMutate: async (switchoverId) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<PostBaseSwitchoverRead[]>(queryKey);
+      queryClient.setQueryData<PostBaseSwitchoverRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === switchoverId ? { ...item, status: 'running' } : item)),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKey, context.previous);
+      }
+    },
+    onSuccess: async (switchover) => {
+      queryClient.setQueryData<PostBaseSwitchoverRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === switchover.id ? switchover : item)),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', undefined, 'bindings'] });
     },
   });
 }
-
 
 export function useCreatePostBaseSecret(environmentId: string | undefined) {
   const queryClient = useQueryClient();
@@ -212,10 +269,76 @@ export function useCreatePostBaseSecret(environmentId: string | undefined) {
       const response = await apiClient.post<PostBaseSecretRead>(`/environments/${environmentId}/secrets`, payload);
       return response.data;
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'secrets'] });
+    onSuccess: async (secret) => {
+      queryClient.setQueryData<PostBaseSecretRead[]>(['postbase', 'environments', environmentId, 'secrets'], (current = []) => [
+        secret,
+        ...current,
+      ]);
       await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
       await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+    },
+  });
+}
+
+export function useRotatePostBaseSecret(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  const queryKey = ['postbase', 'environments', environmentId, 'secrets'] as const;
+
+  return useMutation({
+    mutationFn: async ({ secretId, secretValue }: { secretId: string; secretValue: string }) => {
+      const response = await apiClient.post<PostBaseSecretRotateResult>(
+        `/environments/${environmentId}/secrets/${secretId}/rotate`,
+        { secret_value: secretValue },
+      );
+      return response.data;
+    },
+    onMutate: async ({ secretId }) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<PostBaseSecretRead[]>(queryKey);
+      queryClient.setQueryData<PostBaseSecretRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === secretId ? { ...item, status: 'rotating' } : item)),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKey, context.previous);
+      }
+    },
+    onSuccess: async (result) => {
+      queryClient.setQueryData<PostBaseSecretRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === result.secret.id ? result.secret : item)),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+    },
+  });
+}
+
+export function useDeactivatePostBaseSecret(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  const queryKey = ['postbase', 'environments', environmentId, 'secrets'] as const;
+
+  return useMutation({
+    mutationFn: async (secretId: string) => {
+      await apiClient.delete(`/environments/${environmentId}/secrets/${secretId}`);
+      return secretId;
+    },
+    onMutate: async (secretId) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<PostBaseSecretRead[]>(queryKey);
+      queryClient.setQueryData<PostBaseSecretRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === secretId ? { ...item, status: 'revoked' } : item)),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKey, context.previous);
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
     },
   });
 }
@@ -227,8 +350,45 @@ export function useCreatePostBaseBinding(environmentId: string | undefined) {
       const response = await apiClient.post<PostBaseBindingRead>(`/environments/${environmentId}/bindings`, payload);
       return response.data;
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'bindings'] });
+    onSuccess: async (binding) => {
+      queryClient.setQueryData<PostBaseBindingRead[]>(['postbase', 'environments', environmentId, 'bindings'], (current = []) => [
+        binding,
+        ...current,
+      ]);
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
+      await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
+    },
+  });
+}
+
+export function useUpdatePostBaseBindingStatus(environmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  const queryKey = ['postbase', 'environments', environmentId, 'bindings'] as const;
+
+  return useMutation({
+    mutationFn: async ({ bindingId, payload }: { bindingId: string; payload: PostBaseBindingStatusPayload }) => {
+      const response = await apiClient.post<PostBaseBindingRead>(`/bindings/${bindingId}/status`, payload);
+      return response.data;
+    },
+    onMutate: async ({ bindingId, payload }) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<PostBaseBindingRead[]>(queryKey);
+      queryClient.setQueryData<PostBaseBindingRead[]>(queryKey, (current = []) =>
+        current.map((item) =>
+          item.id === bindingId ? { ...item, status: payload.status, last_transition_reason: payload.reason ?? 'manual_status_update' } : item,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKey, context.previous);
+      }
+    },
+    onSuccess: async (binding) => {
+      queryClient.setQueryData<PostBaseBindingRead[]>(queryKey, (current = []) =>
+        current.map((item) => (item.id === binding.id ? binding : item)),
+      );
       await queryClient.invalidateQueries({ queryKey: ['postbase', 'environments', environmentId, 'health'] });
       await queryClient.invalidateQueries({ queryKey: ['postbase', 'projects'] });
     },
@@ -242,20 +402,22 @@ export function useCreatePostBaseSwitchover(bindingId: string | undefined) {
       const response = await apiClient.post<PostBaseSwitchoverRead>(`/bindings/${bindingId}/switchovers`, payload);
       return response.data;
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['postbase', 'bindings', bindingId, 'switchovers'] });
+    onSuccess: async (switchover) => {
+      queryClient.setQueryData<PostBaseSwitchoverRead[]>(['postbase', 'bindings', bindingId, 'switchovers'], (current = []) => [
+        switchover,
+        ...current,
+      ]);
       await queryClient.invalidateQueries({ queryKey: ['postbase'] });
     },
   });
 }
-
 
 export function useDrainPostBaseWebhooks(environmentId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (limit: number = 200) => {
       const response = await apiClient.post<PostBaseWebhookDrainResult>(
-        `/environments/${environmentId}/operations/webhooks/drain?limit=${limit}`
+        `/environments/${environmentId}/operations/webhooks/drain?limit=${limit}`,
       );
       return response.data;
     },
