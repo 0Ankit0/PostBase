@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { AxiosError } from 'axios';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,6 +29,7 @@ import {
   useRotatePostBaseSecret,
   useUpdatePostBaseBindingStatus,
 } from '@/hooks';
+import type { PostBaseEnvironmentRead } from '@/types';
 
 interface ProjectDetailPageProps {
   params: {
@@ -37,6 +39,9 @@ interface ProjectDetailPageProps {
 
 export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageProps) {
   const { projectId } = params;
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const { data: providerCatalog } = usePostBaseProviderCatalog();
   const environmentsQuery = usePostBaseEnvironments(projectId);
@@ -45,17 +50,38 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const { data: overview } = overviewQuery;
   const { data: usage } = usePostBaseUsage(projectId);
 
-  const primaryEnvironment = environments?.items?.[0];
-  const healthQuery = usePostBaseCapabilityHealth(primaryEnvironment?.id);
+  const environmentItems = environments?.items ?? [];
+  const initialSelectedEnvironment = useMemo(
+    () => resolveSelectedEnvironmentId(environmentItems, searchParams.get('env')),
+    [environmentItems, searchParams],
+  );
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | undefined>(initialSelectedEnvironment);
+
+  useEffect(() => {
+    setSelectedEnvironmentId(resolveSelectedEnvironmentId(environmentItems, searchParams.get('env')));
+  }, [environmentItems, searchParams]);
+
+  const selectedEnvironment = useMemo(
+    () => environmentItems.find((environment) => environment.id === selectedEnvironmentId) ?? environmentItems[0],
+    [environmentItems, selectedEnvironmentId],
+  );
+
+  const selectedEnvironmentOverview = useMemo(
+    () =>
+      (overview?.environments ?? []).find((environment) => environment.environment_id === selectedEnvironment?.id) ?? null,
+    [overview?.environments, selectedEnvironment?.id],
+  );
+
+  const healthQuery = usePostBaseCapabilityHealth(selectedEnvironment?.id);
   const { data: health } = healthQuery;
-  const { data: bindings } = usePostBaseBindings(primaryEnvironment?.id);
-  const { data: secrets } = usePostBaseSecrets(primaryEnvironment?.id);
-  const { data: migrations } = usePostBaseMigrations(primaryEnvironment?.id);
-  const applyMigration = useApplyPostBaseMigration(primaryEnvironment?.id);
-  const retryMigration = useRetryPostBaseMigration(primaryEnvironment?.id);
-  const reconcileMigration = useReconcilePostBaseMigration(primaryEnvironment?.id);
-  const drainWebhooks = useDrainPostBaseWebhooks(primaryEnvironment?.id);
-  const recoverWebhooks = useRecoverPostBaseWebhooks(primaryEnvironment?.id);
+  const { data: bindings } = usePostBaseBindings(selectedEnvironment?.id);
+  const { data: secrets } = usePostBaseSecrets(selectedEnvironment?.id);
+  const { data: migrations } = usePostBaseMigrations(selectedEnvironment?.id);
+  const applyMigration = useApplyPostBaseMigration(selectedEnvironment?.id);
+  const retryMigration = useRetryPostBaseMigration(selectedEnvironment?.id);
+  const reconcileMigration = useReconcilePostBaseMigration(selectedEnvironment?.id);
+  const drainWebhooks = useDrainPostBaseWebhooks(selectedEnvironment?.id);
+  const recoverWebhooks = useRecoverPostBaseWebhooks(selectedEnvironment?.id);
   const [runningActions, setRunningActions] = useState<Record<string, boolean>>({});
   const [latestOperationSummary, setLatestOperationSummary] = useState<string | null>(null);
 
@@ -75,6 +101,14 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const pendingMigrations = migrationItems.filter((item) => item.status === 'pending');
   const failedMigrations = migrationItems.filter((item) => item.status === 'failed');
   const needsReconciliation = migrationItems.filter((item) => item.reconciliation_status !== 'in_sync');
+  const isProductionEnvironment = shouldRequireProductionConfirmation(selectedEnvironment?.stage);
+
+  const switchEnvironment = (environmentId: string) => {
+    setSelectedEnvironmentId(environmentId);
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set('env', environmentId);
+    router.replace(`${pathname}?${nextParams.toString()}`, { scroll: false });
+  };
 
   const runAction = async (actionKey: string, action: () => Promise<void>) => {
     if (runningActions[actionKey]) {
@@ -95,7 +129,24 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         <p className="text-sm text-gray-500">
           Environment readiness, degraded capabilities, usage, migrations, and switchover operations.
         </p>
+        <p className="mt-1 text-xs text-gray-500">
+          Active environment: <span className="font-medium text-gray-700">{selectedEnvironment?.name ?? 'No environment selected'}</span>
+        </p>
       </div>
+
+      <EnvironmentSelector
+        environments={environmentItems}
+        selectedEnvironmentId={selectedEnvironment?.id}
+        selectedOverview={selectedEnvironmentOverview}
+        onSelect={switchEnvironment}
+      />
+
+      {isProductionEnvironment ? (
+        <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <p className="font-medium">Production environment safeguards enabled.</p>
+          <p>High-impact actions require explicit confirmation. Verify maintenance window, rollback plan, and on-call coverage.</p>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="Environments" value={overview?.environment_count ?? 0} />
@@ -189,11 +240,12 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
               size="sm"
               onClick={() =>
                 runAction('drain-webhooks', async () => {
+                  if (!confirmProductionOperation(isProductionEnvironment, 'webhook_drain')) return;
                   const result = await drainWebhooks.mutateAsync(200);
                   setLatestOperationSummary(`Webhook drain complete: ${result.drained_count} job(s) drained.`);
                 })
               }
-              disabled={runningActions['drain-webhooks'] || !primaryEnvironment?.id}
+              disabled={runningActions['drain-webhooks'] || !selectedEnvironment?.id}
             >
               {runningActions['drain-webhooks'] ? 'Running…' : 'Run now'}
             </Button>
@@ -205,13 +257,14 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
               variant="outline"
               onClick={() =>
                 runAction('recover-webhooks', async () => {
+                  if (!confirmProductionOperation(isProductionEnvironment, 'webhook_recover')) return;
                   const result = await recoverWebhooks.mutateAsync(200);
                   setLatestOperationSummary(
                     `Webhook recovery complete: ${result.requeued_jobs}/${result.scanned_failed_jobs} exhausted job(s) re-queued.`,
                   );
                 })
               }
-              disabled={runningActions['recover-webhooks'] || !primaryEnvironment?.id}
+              disabled={runningActions['recover-webhooks'] || !selectedEnvironment?.id}
             >
               {runningActions['recover-webhooks'] ? 'Running…' : 'Run now'}
             </Button>
@@ -223,6 +276,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
               variant="outline"
               onClick={() =>
                 runAction('reconcile-all', async () => {
+                  if (!confirmProductionOperation(isProductionEnvironment, 'migration_reconcile')) return;
                   if (needsReconciliation.length === 0) {
                     setLatestOperationSummary('No migrations currently require reconciliation.');
                     return;
@@ -233,7 +287,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                   setLatestOperationSummary(`Reconciliation run complete for ${needsReconciliation.length} migration(s).`);
                 })
               }
-              disabled={runningActions['reconcile-all'] || !primaryEnvironment?.id || needsReconciliation.length === 0}
+              disabled={runningActions['reconcile-all'] || !selectedEnvironment?.id || needsReconciliation.length === 0}
             >
               {runningActions['reconcile-all'] ? 'Running…' : 'Run now'}
             </Button>
@@ -291,12 +345,13 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <SecretForm environmentId={primaryEnvironment?.id} secrets={secretItems} />
+        <SecretForm environmentId={selectedEnvironment?.id} secrets={secretItems} isProductionEnvironment={isProductionEnvironment} />
         <BindingForm
-          environmentId={primaryEnvironment?.id}
+          environmentId={selectedEnvironment?.id}
           providerCatalog={providerCatalog ?? []}
           bindings={bindingItems}
           secrets={secretItems.map((item) => item.id)}
+          isProductionEnvironment={isProductionEnvironment}
         />
       </div>
 
@@ -305,7 +360,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           <CardTitle>Schema migrations</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
-          <OperationGuardNotice operation="migration_apply" />
+          <OperationGuardNotice operation="migration_apply" isProductionEnvironment={isProductionEnvironment} />
           {pendingMigrations.length === 0 && failedMigrations.length === 0 ? (
             <p className="text-gray-500">No pending/failed migrations.</p>
           ) : (
@@ -324,6 +379,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                       size="sm"
                       onClick={() =>
                         runAction(`migration-apply-${migration.id}`, async () => {
+                          if (!confirmProductionOperation(isProductionEnvironment, 'migration_apply')) return;
                           const result = await applyMigration.mutateAsync(migration.id);
                           setLatestOperationSummary(`Migration ${result.version} apply request accepted (${result.status}).`);
                         })
@@ -339,6 +395,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                       variant="outline"
                       onClick={() =>
                         runAction(`migration-retry-${migration.id}`, async () => {
+                          if (!confirmProductionOperation(isProductionEnvironment, 'migration_retry')) return;
                           const result = await retryMigration.mutateAsync(migration.id);
                           setLatestOperationSummary(
                             `Migration ${result.migration.version} retry requested; rollback status: ${result.rollback_status}.`,
@@ -356,6 +413,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                       variant="outline"
                       onClick={() =>
                         runAction(`reconcile-${migration.id}`, async () => {
+                          if (!confirmProductionOperation(isProductionEnvironment, 'migration_reconcile')) return;
                           const result = await reconcileMigration.mutateAsync(migration.id);
                           setLatestOperationSummary(
                             `Migration ${result.version} reconciliation status: ${result.reconciliation_status}.`,
@@ -389,7 +447,13 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           {bindingItems.map((binding) => (
-            <BindingSwitchoverRow key={binding.id} bindingId={binding.id} capability={binding.capability_key} currentProvider={binding.provider_key} />
+            <BindingSwitchoverRow
+              key={binding.id}
+              bindingId={binding.id}
+              capability={binding.capability_key}
+              currentProvider={binding.provider_key}
+              isProductionEnvironment={isProductionEnvironment}
+            />
           ))}
         </CardContent>
       </Card>
@@ -437,6 +501,60 @@ function StaleDataBanner({ label, onRetry }: { label: string; onRetry: () => voi
   );
 }
 
+function EnvironmentSelector({
+  environments,
+  selectedEnvironmentId,
+  selectedOverview,
+  onSelect,
+}: {
+  environments: PostBaseEnvironmentRead[];
+  selectedEnvironmentId: string | undefined;
+  selectedOverview: { stage: string; status: string; readiness_state: string } | null;
+  onSelect: (environmentId: string) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Environment selector</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {environments.length === 0 ? (
+          <p className="text-gray-500">No environments are currently available for this project.</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            {environments.map((environment) => {
+              const selected = selectedEnvironmentId === environment.id;
+              return (
+                <button
+                  key={environment.id}
+                  type="button"
+                  onClick={() => onSelect(environment.id)}
+                  className={`rounded border p-3 text-left ${
+                    selected ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <p className="font-medium text-gray-900">{environment.name}</p>
+                  <p className="text-xs text-gray-500">{environment.id}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <StatusPill value={environment.stage} type="status" />
+                    <StatusPill value={environment.status} type="status" />
+                    <StatusPill value={environment.readiness_state} type="readiness" />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {selectedOverview ? (
+          <p className="text-xs text-gray-500">
+            Active stage/status/readiness: {selectedOverview.stage} · {selectedOverview.status} · {selectedOverview.readiness_state}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function StatusPill({ value, type }: { value: string; type: 'status' | 'readiness' }) {
   const normalized = normalizeStatus(value);
   const tone = getStatusTone(normalized, type);
@@ -479,6 +597,20 @@ export function deriveQuerySurfaceState({
   if (isError && hasData) return 'stale-cache';
   if (isError) return 'error';
   return 'success';
+}
+
+export function resolveSelectedEnvironmentId(
+  environments: PostBaseEnvironmentRead[],
+  requestedEnvironmentId: string | null | undefined,
+): string | undefined {
+  if (requestedEnvironmentId && environments.some((environment) => environment.id === requestedEnvironmentId)) {
+    return requestedEnvironmentId;
+  }
+  return environments[0]?.id;
+}
+
+export function shouldRequireProductionConfirmation(stage: PostBaseEnvironmentRead['stage'] | undefined): boolean {
+  return stage === 'production';
 }
 
 const READINESS_REMEDIATION_RULES: Array<{ keywords: string[]; remediation: ReadinessRemediation }> = [
@@ -541,10 +673,20 @@ type HighRiskOperation =
   | 'secret_create'
   | 'secret_rotate'
   | 'secret_deactivate'
+  | 'webhook_drain'
+  | 'webhook_recover'
   | 'migration_apply'
+  | 'migration_reconcile'
   | 'migration_retry'
   | 'switchover_plan'
   | 'switchover_execute';
+
+function confirmProductionOperation(isProductionEnvironment: boolean, operation: HighRiskOperation): boolean {
+  if (!isProductionEnvironment) return true;
+  return window.confirm(
+    `Production safeguard: confirm you want to continue with ${operation.replace('_', ' ')}. Ensure rollback and monitoring are ready.`,
+  );
+}
 
 const HIGH_RISK_PREFLIGHT_COPY: Record<HighRiskOperation, string> = {
   binding_create:
@@ -557,8 +699,14 @@ const HIGH_RISK_PREFLIGHT_COPY: Record<HighRiskOperation, string> = {
     'Preflight: ensure downstream adapters accept the new credential before rotating.',
   secret_deactivate:
     'Preflight: make sure no active binding still references this secret.',
+  webhook_drain:
+    'Preflight: verify queue consumers and retry policy; draining can re-order delivery under load.',
+  webhook_recover:
+    'Preflight: confirm failed job root causes are fixed before re-queueing exhausted deliveries.',
   migration_apply:
     'Preflight: run drift checks and verify no long-running writes are in-flight before applying migration SQL.',
+  migration_reconcile:
+    'Preflight: inspect drift sources before reconciling to avoid masking the root issue.',
   migration_retry:
     'Preflight: inspect failure and rollback status, then retry only after remediating the root cause.',
   switchover_plan:
@@ -585,7 +733,15 @@ export function OperationStatusSummary({
   );
 }
 
-function SecretForm({ environmentId, secrets }: { environmentId: string | undefined; secrets: Array<{ id: string; name: string; provider_key: string; status: string; last_four: string }> }) {
+function SecretForm({
+  environmentId,
+  secrets,
+  isProductionEnvironment,
+}: {
+  environmentId: string | undefined;
+  secrets: Array<{ id: string; name: string; provider_key: string; status: string; last_four: string }>;
+  isProductionEnvironment: boolean;
+}) {
   const createSecret = useCreatePostBaseSecret(environmentId);
   const rotateSecret = useRotatePostBaseSecret(environmentId);
   const deactivateSecret = useDeactivatePostBaseSecret(environmentId);
@@ -617,12 +773,18 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
         <CardTitle>Secret lifecycle (create / rotate / deactivate)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        <OperationGuardNotice operation="secret_create" />
+        <OperationGuardNotice operation="secret_create" isProductionEnvironment={isProductionEnvironment} />
         <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Secret name" />
         <Input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Provider key" />
         <Input value={secretKind} onChange={(event) => setSecretKind(event.target.value)} placeholder="Secret kind" />
         <Input value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder="Secret value" type="password" />
-        <Button disabled={!environmentId || createSecret.isPending} onClick={onSubmit}>
+        <Button
+          disabled={!environmentId || createSecret.isPending}
+          onClick={() => {
+            if (!confirmProductionOperation(isProductionEnvironment, 'secret_create')) return;
+            onSubmit();
+          }}
+        >
           Create secret
         </Button>
 
@@ -643,6 +805,7 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
                     size="sm"
                     variant="outline"
                     onClick={() => {
+                      if (!confirmProductionOperation(isProductionEnvironment, 'secret_deactivate')) return;
                       if (pendingBySecret[secret.id]) return;
                       setPendingBySecret((current) => ({ ...current, [secret.id]: true }));
                       deactivateSecret.mutate(secret.id, {
@@ -664,6 +827,7 @@ function SecretForm({ environmentId, secrets }: { environmentId: string | undefi
                   <Button
                     size="sm"
                     onClick={() => {
+                      if (!confirmProductionOperation(isProductionEnvironment, 'secret_rotate')) return;
                       const nextValue = rotateInputBySecret[secret.id]?.trim();
                       if (!nextValue) return;
                       if (pendingBySecret[secret.id]) return;
@@ -702,11 +866,13 @@ function BindingForm({
   providerCatalog,
   bindings,
   secrets,
+  isProductionEnvironment,
 }: {
   environmentId: string | undefined;
   providerCatalog: Array<{ capability_key: string; provider_key: string }>;
   bindings: Array<{ id: string; capability_key: string; provider_key: string; status: string }>;
   secrets: string[];
+  isProductionEnvironment: boolean;
 }) {
   const createBinding = useCreatePostBaseBinding(environmentId);
   const updateBindingStatus = useUpdatePostBaseBindingStatus(environmentId);
@@ -766,14 +932,20 @@ function BindingForm({
         <CardTitle>Binding lifecycle (create / update / disable / retire)</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs text-gray-500">
-        <OperationGuardNotice operation="binding_create" />
+        <OperationGuardNotice operation="binding_create" isProductionEnvironment={isProductionEnvironment} />
         <Input value={capabilityKey} onChange={(event) => setCapabilityKey(event.target.value)} placeholder="Capability key" />
         <Input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Provider key" />
         <Input value={region} onChange={(event) => setRegion(event.target.value)} placeholder="Region (optional)" />
         <Input value={secretIds} onChange={(event) => setSecretIds(event.target.value)} placeholder="Secret ids comma-separated" />
         {secrets.length > 0 && <p>Available secret ids: {secrets.join(', ')}</p>}
         <Input value={configJson} onChange={(event) => setConfigJson(event.target.value)} placeholder='Config JSON (e.g. {"x":1})' />
-        <Button disabled={!environmentId || createBinding.isPending} onClick={onSubmit}>
+        <Button
+          disabled={!environmentId || createBinding.isPending}
+          onClick={() => {
+            if (!confirmProductionOperation(isProductionEnvironment, 'binding_create')) return;
+            onSubmit();
+          }}
+        >
           Create binding
         </Button>
         <div>Known catalog pairs: {providerCatalog.map((item) => `${item.capability_key}/${item.provider_key}`).join(' · ')}</div>
@@ -794,7 +966,10 @@ function BindingForm({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => transitionBinding(binding.id, 'active')}
+                  onClick={() => {
+                    if (!confirmProductionOperation(isProductionEnvironment, 'binding_transition')) return;
+                    transitionBinding(binding.id, 'active');
+                  }}
                   disabled={updateBindingStatus.isPending || transitionPendingByBinding[binding.id]}
                 >
                   Update/Enable
@@ -802,7 +977,10 @@ function BindingForm({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => transitionBinding(binding.id, 'disabled')}
+                  onClick={() => {
+                    if (!confirmProductionOperation(isProductionEnvironment, 'binding_transition')) return;
+                    transitionBinding(binding.id, 'disabled');
+                  }}
                   disabled={updateBindingStatus.isPending || transitionPendingByBinding[binding.id]}
                 >
                   Disable
@@ -810,7 +988,10 @@ function BindingForm({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => transitionBinding(binding.id, 'retired')}
+                  onClick={() => {
+                    if (!confirmProductionOperation(isProductionEnvironment, 'binding_transition')) return;
+                    transitionBinding(binding.id, 'retired');
+                  }}
                   disabled={updateBindingStatus.isPending || transitionPendingByBinding[binding.id]}
                 >
                   Retire
@@ -831,10 +1012,12 @@ function BindingSwitchoverRow({
   bindingId,
   capability,
   currentProvider,
+  isProductionEnvironment,
 }: {
   bindingId: string;
   capability: string;
   currentProvider: string;
+  isProductionEnvironment: boolean;
 }) {
   const [targetProvider, setTargetProvider] = useState('');
   const [strategy, setStrategy] = useState('cutover');
@@ -849,7 +1032,7 @@ function BindingSwitchoverRow({
   if (!pending) {
     return (
       <div className="space-y-2 rounded border border-gray-200 p-2 text-gray-500">
-        <OperationGuardNotice operation="switchover_plan" />
+        <OperationGuardNotice operation="switchover_plan" isProductionEnvironment={isProductionEnvironment} />
         <div>{capability}: no pending switchover (current provider: {currentProvider})</div>
         <div className="flex flex-wrap items-center gap-2">
           <Input value={targetProvider} onChange={(event) => setTargetProvider(event.target.value)} placeholder="Target provider key" />
@@ -857,7 +1040,10 @@ function BindingSwitchoverRow({
           <Input value={retirementStrategy} onChange={(event) => setRetirementStrategy(event.target.value)} placeholder="Retirement strategy" />
           <Button
             size="sm"
-            onClick={() => createSwitchover.mutate({ target_provider_key: targetProvider, strategy, retirement_strategy: retirementStrategy })}
+            onClick={() => {
+              if (!confirmProductionOperation(isProductionEnvironment, 'switchover_plan')) return;
+              createSwitchover.mutate({ target_provider_key: targetProvider, strategy, retirement_strategy: retirementStrategy });
+            }}
             disabled={createSwitchover.isPending || !targetProvider}
           >
             Plan switchover
@@ -878,7 +1064,10 @@ function BindingSwitchoverRow({
         <div className="flex gap-2">
           <Button
             size="sm"
-            onClick={() => executeSwitchover.mutate(pending.id)}
+            onClick={() => {
+              if (!confirmProductionOperation(isProductionEnvironment, 'switchover_execute')) return;
+              executeSwitchover.mutate(pending.id);
+            }}
             disabled={executeSwitchover.isPending || preflightBlocked}
           >
             {executeSwitchover.isPending ? 'Executing…' : 'Execute'}
@@ -886,14 +1075,17 @@ function BindingSwitchoverRow({
           <Button
             size="sm"
             variant="outline"
-            onClick={() => executeSwitchover.mutate(pending.id)}
+            onClick={() => {
+              if (!confirmProductionOperation(isProductionEnvironment, 'switchover_execute')) return;
+              executeSwitchover.mutate(pending.id);
+            }}
             disabled={executeSwitchover.isPending || preflightBlocked}
           >
             {pending.status === 'failed' ? 'Retry execute' : 'Rollback execute'}
           </Button>
         </div>
       </div>
-      <OperationGuardNotice operation="switchover_execute" />
+      <OperationGuardNotice operation="switchover_execute" isProductionEnvironment={isProductionEnvironment} />
       {preflightBlocked ? (
         <p className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
           Switchover execution blocked: clear preflight failures below before executing or retrying.
@@ -916,10 +1108,11 @@ function BindingSwitchoverRow({
   );
 }
 
-function OperationGuardNotice({ operation }: { operation: HighRiskOperation }) {
+function OperationGuardNotice({ operation, isProductionEnvironment = false }: { operation: HighRiskOperation; isProductionEnvironment?: boolean }) {
   return (
     <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
       {HIGH_RISK_PREFLIGHT_COPY[operation]}
+      {isProductionEnvironment ? ' Production stage: a manual confirmation is required before continuing.' : ''}
     </p>
   );
 }
@@ -973,7 +1166,11 @@ export function buildOperationRemediation(operation: HighRiskOperation): string 
     case 'secret_rotate':
     case 'secret_deactivate':
       return 'Validate secret scope/value, ensure no active dependency breakage, and retry after rotation/deactivation checks.';
+    case 'webhook_drain':
+    case 'webhook_recover':
+      return 'Confirm queue health, resolve delivery failures, and rerun with operator approval if backlog pressure is acceptable.';
     case 'migration_apply':
+    case 'migration_reconcile':
     case 'migration_retry':
       return 'Inspect migration error details, reconcile schema drift, then retry once environment readiness returns to healthy.';
     case 'switchover_plan':

@@ -7,6 +7,8 @@ import {
   deriveQuerySurfaceState,
   isReadinessHealthy,
   OperationStatusSummary,
+  resolveSelectedEnvironmentId,
+  shouldRequireProductionConfirmation,
 } from './page';
 
 function createAxiosError(status: number): AxiosError {
@@ -104,5 +106,51 @@ describe('PostBase admin control plane helpers', () => {
   it('returns actionable remediation guidance for high-risk operations', () => {
     expect(buildOperationRemediation('migration_apply')).toContain('reconcile schema drift');
     expect(buildOperationRemediation('switchover_execute')).toContain('Resolve preflight blockers');
+  });
+
+  it('resolves selected environment from URL query when valid and falls back to first environment when invalid', () => {
+    const environments = [
+      {
+        id: 'env-dev',
+        project_id: 'project-1',
+        name: 'Development',
+        slug: 'development',
+        stage: 'development',
+        region_preference: null,
+        status: 'active',
+        readiness_state: 'ready',
+        readiness_detail: 'Ready',
+        last_validated_at: null,
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        id: 'env-prod',
+        project_id: 'project-1',
+        name: 'Production',
+        slug: 'production',
+        stage: 'production',
+        region_preference: null,
+        status: 'active',
+        readiness_state: 'ready',
+        readiness_detail: 'Ready',
+        last_validated_at: null,
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ] as const;
+
+    expect(resolveSelectedEnvironmentId([...environments], 'env-prod')).toBe('env-prod');
+    expect(resolveSelectedEnvironmentId([...environments], 'missing-env')).toBe('env-dev');
+    expect(resolveSelectedEnvironmentId([...environments], null)).toBe('env-dev');
+  });
+
+  it('requires confirmations only for production-stage operations', () => {
+    expect(shouldRequireProductionConfirmation('production')).toBe(true);
+    expect(shouldRequireProductionConfirmation('staging')).toBe(false);
+    expect(shouldRequireProductionConfirmation('development')).toBe(false);
+    expect(shouldRequireProductionConfirmation(undefined)).toBe(false);
   });
 });
