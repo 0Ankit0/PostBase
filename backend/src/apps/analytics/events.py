@@ -23,6 +23,7 @@ class PaymentEvents:
     PAYMENT_INITIATED = "payment_initiated"
     PAYMENT_COMPLETED = "payment_completed"
     PAYMENT_FAILED = "payment_failed"
+    PAYMENT_ACCESS_DENIED = "payment_access_denied"
     SUBSCRIPTION_STARTED = "subscription_started"
     SUBSCRIPTION_CANCELLED = "subscription_cancelled"
 

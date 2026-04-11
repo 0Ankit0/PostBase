@@ -13,6 +13,9 @@ from httpx import AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.apps.finance.models.payment import PaymentProvider, PaymentStatus, PaymentTransaction
+from src.apps.iam.api.deps import get_current_user
+from src.apps.iam.models.user import User
+from src.main import app
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +55,27 @@ def _esewa_callback_data(transaction_uuid: str, total_amount: int = 100) -> str:
     sig = _esewa_sig(message)
     fields_values["signature"] = sig
     return base64.b64encode(json.dumps(fields_values).encode()).decode()
+
+
+@pytest.fixture(autouse=True)
+async def _override_finance_user(client: AsyncClient, db_session: AsyncSession):
+    """Keep unit payment tests focused on payment logic, not auth token plumbing."""
+    user = User(
+        username="finance_unit_user",
+        email="finance_unit_user@example.com",
+        hashed_password="not-used",
+        is_active=True,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    async def _current_user_override():
+        return user
+
+    app.dependency_overrides[get_current_user] = _current_user_override
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 # ---------------------------------------------------------------------------

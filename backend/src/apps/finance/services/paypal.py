@@ -31,6 +31,7 @@ from src.apps.finance.schemas.payment import (
     VerifyPaymentResponse,
 )
 from src.apps.finance.services.base import BasePaymentProvider
+from src.apps.iam.models.user import User
 
 # PayPal state → our enum
 _STATUS_MAP: dict[str, PaymentStatus] = {
@@ -64,6 +65,7 @@ class PayPalService(BasePaymentProvider):
         self,
         request: InitiatePaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> InitiatePaymentResponse:
         """
         Create a PayPal Payment and return the buyer approval URL.
@@ -108,6 +110,7 @@ class PayPalService(BasePaymentProvider):
                 website_url=request.website_url,
                 status=PaymentStatus.FAILED,
                 failure_reason=str(error),
+                user_id=current_user.id,
             )
             db.add(tx)
             await db.commit()
@@ -130,6 +133,7 @@ class PayPalService(BasePaymentProvider):
             status=PaymentStatus.INITIATED,
             provider_pidx=payment.id,       # PayPal payment ID (PAY-...)
             extra_data=json.dumps({"payment_id": payment.id, "state": payment.state}),
+            user_id=current_user.id,
         )
         db.add(tx)
         await db.commit()
@@ -152,6 +156,7 @@ class PayPalService(BasePaymentProvider):
         self,
         request: VerifyPaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> VerifyPaymentResponse:
         """
         Execute an approved PayPal payment.
@@ -171,22 +176,6 @@ class PayPalService(BasePaymentProvider):
         if not payer_id:
             raise ValueError("PayerID (oid) is required for PayPal verification")
 
-        payment = paypalrestsdk.Payment.find(payment_id, api=_get_api())
-
-        if not payment.execute({"payer_id": payer_id}):
-            error = payment.error or "PayPal execution failed"
-            raise ValueError(f"PayPal execution failed: {error}")
-
-        sale_id: str | None = None
-        try:
-            sale_id = payment.transactions[0].related_resources[0].sale.id
-        except (AttributeError, IndexError):
-            pass
-
-        our_status = _STATUS_MAP.get(payment.state.lower(), PaymentStatus.FAILED)
-        if payment.state.lower() == "approved":
-            our_status = PaymentStatus.COMPLETED
-
         result = await db.execute(
             select(PaymentTransaction).where(
                 PaymentTransaction.provider_pidx == payment_id
@@ -196,6 +185,21 @@ class PayPalService(BasePaymentProvider):
 
         if tx is None:
             raise ValueError(f"No transaction found for PayPal paymentId={payment_id}")
+        if tx.user_id != current_user.id and not current_user.is_superuser:
+            raise PermissionError("Not authorized to verify this transaction")
+
+        payment = paypalrestsdk.Payment.find(payment_id, api=_get_api())
+        if not payment.execute({"payer_id": payer_id}):
+            error = payment.error or "PayPal execution failed"
+            raise ValueError(f"PayPal execution failed: {error}")
+        sale_id: str | None = None
+        try:
+            sale_id = payment.transactions[0].related_resources[0].sale.id
+        except (AttributeError, IndexError):
+            pass
+        our_status = _STATUS_MAP.get(payment.state.lower(), PaymentStatus.FAILED)
+        if payment.state.lower() == "approved":
+            our_status = PaymentStatus.COMPLETED
 
         tx.status = our_status
         tx.provider_transaction_id = sale_id or payment_id

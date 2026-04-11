@@ -9,6 +9,7 @@ from src.apps.finance.schemas.payment import (
     VerifyPaymentRequest,
     VerifyPaymentResponse,
 )
+from src.apps.iam.models.user import User
 
 
 class BasePaymentProvider(ABC):
@@ -28,6 +29,7 @@ class BasePaymentProvider(ABC):
         self,
         request: InitiatePaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> InitiatePaymentResponse:
         """
         Initiate a new payment with the provider.
@@ -43,6 +45,7 @@ class BasePaymentProvider(ABC):
         self,
         request: VerifyPaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> VerifyPaymentResponse:
         """
         Verify/confirm a payment after the provider callback.
