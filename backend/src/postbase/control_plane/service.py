@@ -39,6 +39,7 @@ from src.postbase.domain.models import (
     SwitchoverPlan,
     TableDefinition,
     UsageMeter,
+    IdempotencyRecord,
 )
 from src.postbase.platform.access import (
     build_physical_schema,
@@ -46,6 +47,7 @@ from src.postbase.platform.access import (
     validate_identifier,
 )
 from src.postbase.platform.audit import record_audit_event
+from src.postbase.platform.idempotency import IdempotencyReplay, IdempotencyService
 from src.postbase.platform.contracts import CapabilityProfile
 from src.postbase.platform.registry import provider_registry
 from src.postbase.platform.resolver import resolve_active_binding
@@ -113,6 +115,63 @@ LEGAL_ENVIRONMENT_STATUS_TRANSITIONS: dict[EnvironmentStatus, set[EnvironmentSta
     EnvironmentStatus.DEGRADED: {EnvironmentStatus.ACTIVE, EnvironmentStatus.INACTIVE},
     EnvironmentStatus.INACTIVE: {EnvironmentStatus.ACTIVE},
 }
+
+
+def build_idempotency_endpoint_fingerprint(*, method: str, path: str) -> str:
+    return f"{method.upper()}:{path}"
+
+
+def build_idempotency_request_hash(payload: Any) -> str:
+    return IdempotencyService.build_request_hash(payload)
+
+
+async def check_idempotency_replay(
+    db: AsyncSession,
+    *,
+    idempotency_key: str,
+    actor_user_id: int,
+    endpoint_fingerprint: str,
+    request_hash: str,
+) -> IdempotencyReplay | None:
+    return await IdempotencyService.check_replay_or_conflict(
+        db,
+        idempotency_key=idempotency_key,
+        actor_user_id=actor_user_id,
+        endpoint_fingerprint=endpoint_fingerprint,
+        request_hash=request_hash,
+    )
+
+
+async def reserve_idempotency_key(
+    db: AsyncSession,
+    *,
+    idempotency_key: str,
+    actor_user_id: int,
+    endpoint_fingerprint: str,
+    request_hash: str,
+):
+    return await IdempotencyService.reserve_key(
+        db,
+        idempotency_key=idempotency_key,
+        actor_user_id=actor_user_id,
+        endpoint_fingerprint=endpoint_fingerprint,
+        request_hash=request_hash,
+    )
+
+
+async def persist_idempotency_success(
+    db: AsyncSession,
+    *,
+    idempotency_record: IdempotencyRecord,
+    response_status_code: int,
+    response_json: dict[str, Any],
+) -> None:
+    await IdempotencyService.persist_success(
+        db,
+        record=idempotency_record,
+        response_status_code=response_status_code,
+        response_json=response_json,
+    )
 
 
 def _forbidden_role_payload(*, required_role: TenantRole) -> dict[str, str]:

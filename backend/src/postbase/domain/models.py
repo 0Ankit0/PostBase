@@ -216,6 +216,31 @@ class UsageMeter(SQLModel, table=True):
     measured_at: datetime = Field(default_factory=utcnow, index=True)
 
 
+class IdempotencyRecord(SQLModel, table=True):
+    __tablename__ = "postbase_idempotency_record"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            "actor_user_id",
+            "endpoint_fingerprint",
+            name="uq_postbase_idempotency_key_actor_endpoint",
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    idempotency_key: str = Field(max_length=255, index=True)
+    actor_user_id: int = Field(foreign_key="user.id", index=True)
+    endpoint_fingerprint: str = Field(max_length=255)
+    request_hash: str = Field(max_length=128)
+    response_status_code: int | None = Field(default=None)
+    response_json: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class SwitchoverPlan(SQLModel, table=True):
     __tablename__ = "postbase_switchover_plan"
 
