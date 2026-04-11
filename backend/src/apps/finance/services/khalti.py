@@ -27,6 +27,7 @@ from src.apps.finance.schemas.payment import (
     VerifyPaymentResponse,
 )
 from src.apps.finance.services.base import BasePaymentProvider
+from src.apps.iam.models.user import User
 
 
 def _describe_http_error(exc: httpx.HTTPError) -> str:
@@ -87,6 +88,7 @@ class KhaltiService(BasePaymentProvider):
         self,
         request: InitiatePaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> InitiatePaymentResponse:
         """
         Call Khalti /epayment/initiate/ and persist a transaction record.
@@ -130,7 +132,7 @@ class KhaltiService(BasePaymentProvider):
                 website_url=request.website_url,
                 status=PaymentStatus.FAILED,
                 failure_reason=f"Initiation failed: {error_detail}",
-                user_id=None,
+                user_id=current_user.id,
             )
             db.add(tx)
             await db.commit()
@@ -151,6 +153,7 @@ class KhaltiService(BasePaymentProvider):
             status=PaymentStatus.INITIATED,
             provider_pidx=pidx,
             extra_data=json.dumps(data),
+            user_id=current_user.id,
         )
         db.add(tx)
         await db.commit()
@@ -173,6 +176,7 @@ class KhaltiService(BasePaymentProvider):
         self,
         request: VerifyPaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> VerifyPaymentResponse:
         """
         Call Khalti /epayment/lookup/ with the pidx to verify the payment.
@@ -183,6 +187,16 @@ class KhaltiService(BasePaymentProvider):
         pidx = request.pidx
         if not pidx:
             raise ValueError("pidx is required for Khalti verification")
+
+        from sqlmodel import select
+        result = await db.execute(
+            select(PaymentTransaction).where(PaymentTransaction.provider_pidx == pidx)
+        )
+        tx: PaymentTransaction | None = result.scalars().first()
+        if tx is None:
+            raise ValueError(f"No transaction found for Khalti pidx={pidx}")
+        if tx.user_id != current_user.id and not current_user.is_superuser:
+            raise PermissionError("Not authorized to verify this transaction")
 
         try:
             resp = await self._post_khalti("epayment/lookup/", {"pidx": pidx})
@@ -204,15 +218,6 @@ class KhaltiService(BasePaymentProvider):
             "Refunded": PaymentStatus.REFUNDED,
         }
         our_status = status_map.get(khalti_status, PaymentStatus.FAILED)
-
-        from sqlmodel import select
-        result = await db.execute(
-            select(PaymentTransaction).where(PaymentTransaction.provider_pidx == pidx)
-        )
-        tx: PaymentTransaction | None = result.scalars().first()
-
-        if tx is None:
-            raise ValueError(f"No transaction found for Khalti pidx={pidx}")
 
         tx.status = our_status
         tx.provider_transaction_id = transaction_id_provider

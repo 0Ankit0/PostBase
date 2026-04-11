@@ -40,6 +40,7 @@ from src.apps.finance.schemas.payment import (
     VerifyPaymentResponse,
 )
 from src.apps.finance.services.base import BasePaymentProvider
+from src.apps.iam.models.user import User
 
 
 def _compute_esewa_signature(message: str, secret: str) -> str:
@@ -79,6 +80,7 @@ class EsewaService(BasePaymentProvider):
         self,
         request: InitiatePaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> InitiatePaymentResponse:
         """
         Build eSewa form data (including the HMAC signature) and persist
@@ -125,6 +127,7 @@ class EsewaService(BasePaymentProvider):
             status=PaymentStatus.INITIATED,
             provider_pidx=transaction_uuid,
             extra_data=json.dumps(form_data.model_dump()),
+            user_id=current_user.id,
         )
         db.add(tx)
         await db.commit()
@@ -155,6 +158,7 @@ class EsewaService(BasePaymentProvider):
         self,
         request: VerifyPaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> VerifyPaymentResponse:
         """
         Verify eSewa payment from callback data.
@@ -192,6 +196,18 @@ class EsewaService(BasePaymentProvider):
         if not transaction_uuid:
             raise ValueError("transaction_uuid missing from eSewa callback")
 
+        from sqlmodel import select
+        result = await db.execute(
+            select(PaymentTransaction).where(
+                PaymentTransaction.provider_pidx == transaction_uuid
+            )
+        )
+        tx: PaymentTransaction | None = result.scalars().first()
+        if tx is None:
+            raise ValueError(f"No transaction found for eSewa transaction_uuid={transaction_uuid}")
+        if tx.user_id != current_user.id and not current_user.is_superuser:
+            raise PermissionError("Not authorized to verify this transaction")
+
         async with httpx.AsyncClient() as client:
             resp = await retry_async(
                 lambda: client.get(
@@ -225,17 +241,6 @@ class EsewaService(BasePaymentProvider):
         our_status = status_map.get(esewa_status_str, PaymentStatus.FAILED)
 
         # ------ update transaction ----------------------------------------
-        from sqlmodel import select
-        result = await db.execute(
-            select(PaymentTransaction).where(
-                PaymentTransaction.provider_pidx == transaction_uuid
-            )
-        )
-        tx: PaymentTransaction | None = result.scalars().first()
-
-        if tx is None:
-            raise ValueError(f"No transaction found for eSewa transaction_uuid={transaction_uuid}")
-
         tx.status = our_status
         tx.provider_transaction_id = cb.transaction_code or esewa_status_data.get("ref_id")
         tx.extra_data = json.dumps({

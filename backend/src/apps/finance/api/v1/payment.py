@@ -27,7 +27,8 @@ from src.apps.finance.services.esewa import EsewaService
 from src.apps.finance.services.khalti import KhaltiService
 from src.apps.finance.services.stripe import StripeService
 from src.apps.finance.services.paypal import PayPalService
-from src.apps.iam.api.deps import get_db
+from src.apps.iam.api.deps import get_current_user, get_db
+from src.apps.iam.models.user import User
 from src.apps.iam.utils.hashid import decode_id_or_404
 from src.apps.analytics.dependencies import get_analytics
 from src.apps.analytics.service import AnalyticsService
@@ -84,7 +85,9 @@ def _get_provider(provider: PaymentProvider) -> BasePaymentProvider:
 # ---------------------------------------------------------------------------
 
 @router.get("/providers/", response_model=list[str])
-async def list_enabled_providers() -> list[str]:
+async def list_enabled_providers(
+    current_user: User = Depends(get_current_user),
+) -> list[str]:
     """Return the list of currently enabled payment providers."""
     return [p.value for p in _PROVIDERS]
 
@@ -97,6 +100,7 @@ async def list_enabled_providers() -> list[str]:
 async def initiate_payment(
     request_body: InitiatePaymentRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     analytics: AnalyticsService = Depends(get_analytics),
 ) -> InitiatePaymentResponse:
     """
@@ -107,12 +111,13 @@ async def initiate_payment(
     """
     provider_svc = _get_provider(request_body.provider)
     try:
-        result = await provider_svc.initiate_payment(request_body, db)
-        distinct_id = str(result.transaction_id)
+        result = await provider_svc.initiate_payment(request_body, db, current_user)
+        distinct_id = str(current_user.id)
         await analytics.capture(
             distinct_id,
             PaymentEvents.PAYMENT_INITIATED,
             {
+                "actor_user_id": current_user.id,
                 "provider": request_body.provider.value,
                 "amount": request_body.amount,
                 "purchase_order_id": request_body.purchase_order_id,
@@ -137,6 +142,7 @@ async def initiate_payment(
 async def verify_payment(
     request_body: VerifyPaymentRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     analytics: AnalyticsService = Depends(get_analytics),
 ) -> VerifyPaymentResponse:
     """
@@ -147,7 +153,7 @@ async def verify_payment(
     """
     provider_svc = _get_provider(request_body.provider)
     try:
-        result = await provider_svc.verify_payment(request_body, db)
+        result = await provider_svc.verify_payment(request_body, db, current_user)
         from src.apps.finance.models.payment import PaymentStatus
         event = (
             PaymentEvents.PAYMENT_COMPLETED
@@ -155,9 +161,10 @@ async def verify_payment(
             else PaymentEvents.PAYMENT_FAILED
         )
         await analytics.capture(
-            str(result.transaction_id),
+            str(current_user.id),
             event,
             {
+                "actor_user_id": current_user.id,
                 "provider": request_body.provider.value,
                 "status": result.status.value,
                 "amount": result.amount,
@@ -165,6 +172,22 @@ async def verify_payment(
             },
         )
         return result
+    except PermissionError:
+        await analytics.capture(
+            str(current_user.id),
+            PaymentEvents.PAYMENT_ACCESS_DENIED,
+            {
+                "actor_user_id": current_user.id,
+                "provider": request_body.provider.value,
+                "pidx": request_body.pidx,
+                "transaction_id": request_body.transaction_id,
+                "reason": "verify_not_owner",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to verify this transaction.",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -182,6 +205,8 @@ async def verify_payment(
 async def get_transaction(
     transaction_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    analytics: AnalyticsService = Depends(get_analytics),
 ) -> PaymentTransactionRead:
     """Fetch a stored payment transaction by its internal ID."""
     decoded_transaction_id = decode_id_or_404(transaction_id)
@@ -190,6 +215,21 @@ async def get_transaction(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Transaction {transaction_id} not found.",
+        )
+    if tx.user_id != current_user.id and not current_user.is_superuser:
+        await analytics.capture(
+            str(current_user.id),
+            PaymentEvents.PAYMENT_ACCESS_DENIED,
+            {
+                "actor_user_id": current_user.id,
+                "target_user_id": tx.user_id,
+                "transaction_id": tx.id,
+                "reason": "get_transaction_not_owner",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to access this transaction.",
         )
     return PaymentTransactionRead.model_validate(tx)
 
@@ -204,6 +244,7 @@ async def list_transactions(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[PaymentTransactionRead]:
     """List payment transactions with optional provider filter."""
     query = select(PaymentTransaction).order_by(
@@ -212,6 +253,8 @@ async def list_transactions(
 
     if provider:
         query = query.where(PaymentTransaction.provider == provider)
+    if not current_user.is_superuser:
+        query = query.where(PaymentTransaction.user_id == current_user.id)
 
     result = await db.execute(query)
     transactions = result.scalars().all()

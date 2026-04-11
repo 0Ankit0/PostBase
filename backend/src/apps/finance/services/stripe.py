@@ -34,6 +34,7 @@ from src.apps.finance.schemas.payment import (
     VerifyPaymentResponse,
 )
 from src.apps.finance.services.base import BasePaymentProvider
+from src.apps.iam.models.user import User
 
 # Stripe status → our enum
 _STATUS_MAP: dict[str, PaymentStatus] = {
@@ -57,6 +58,7 @@ class StripeService(BasePaymentProvider):
         self,
         request: InitiatePaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> InitiatePaymentResponse:
         """
         Create a Stripe Checkout Session and persist a transaction record.
@@ -103,6 +105,7 @@ class StripeService(BasePaymentProvider):
                 "session_id": session.id,
                 "payment_status": session.payment_status,
             }),
+            user_id=current_user.id,
         )
         db.add(tx)
         await db.commit()
@@ -125,6 +128,7 @@ class StripeService(BasePaymentProvider):
         self,
         request: VerifyPaymentRequest,
         db: AsyncSession,
+        current_user: User,
     ) -> VerifyPaymentResponse:
         """
         Retrieve a Stripe Checkout Session and update the transaction.
@@ -136,13 +140,6 @@ class StripeService(BasePaymentProvider):
         if not session_id:
             raise ValueError("session_id (pidx) is required for Stripe verification")
 
-        session = stripe.checkout.Session.retrieve(session_id)
-
-        our_status = _STATUS_MAP.get(session.status, PaymentStatus.FAILED)
-        # Also check payment_status for completed sessions
-        if session.status == "complete" and session.payment_status == "paid":
-            our_status = PaymentStatus.COMPLETED
-
         result = await db.execute(
             select(PaymentTransaction).where(
                 PaymentTransaction.provider_pidx == session_id
@@ -152,6 +149,13 @@ class StripeService(BasePaymentProvider):
 
         if tx is None:
             raise ValueError(f"No transaction found for Stripe session_id={session_id}")
+        if tx.user_id != current_user.id and not current_user.is_superuser:
+            raise PermissionError("Not authorized to verify this transaction")
+
+        session = stripe.checkout.Session.retrieve(session_id)
+        our_status = _STATUS_MAP.get(session.status, PaymentStatus.FAILED)
+        if session.status == "complete" and session.payment_status == "paid":
+            our_status = PaymentStatus.COMPLETED
 
         tx.status = our_status
         tx.provider_transaction_id = session.payment_intent
