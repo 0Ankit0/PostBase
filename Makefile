@@ -18,6 +18,7 @@ docs:
 docs-check: docs
 
 deploy-readiness:
+	python3 scripts/validate_documentation.py
 	python3 scripts/check_deploy_readiness.py
 
 backend-lint:

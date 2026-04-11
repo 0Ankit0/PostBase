@@ -2,12 +2,13 @@
 
 Use this checklist when you are turning the boilerplate into a real project and want one last pass before treating it as your team’s base.
 
-## Identity
+## Identity And Setup
 
-- Rename `PROJECT_NAME` and `APP_INSTANCE_NAME` in [backend/.env.example](/Users/ankit/Projects/Python/fastapi/fastapi_template/backend/.env.example).
-- Set `NEXT_PUBLIC_APP_NAME` in [frontend/.env.local.example](/Users/ankit/Projects/Python/fastapi/fastapi_template/frontend/.env.local.example).
-- Set `PROJECT_NAME` in [mobile/.env.example](/Users/ankit/Projects/Python/fastapi/fastapi_template/mobile/.env.example).
-- Review package and app identifiers in [backend/pyproject.toml](/Users/ankit/Projects/Python/fastapi/fastapi_template/backend/pyproject.toml), [frontend/package.json](/Users/ankit/Projects/Python/fastapi/fastapi_template/frontend/package.json), and [mobile/pubspec.yaml](/Users/ankit/Projects/Python/fastapi/fastapi_template/mobile/pubspec.yaml).
+- Set project identity values in `backend/.env.example` and `backend/.env.staging.example` (for example: `PROJECT_NAME`, `APP_INSTANCE_NAME`).
+- Set frontend identity values in `frontend/.env.local.example` and `frontend/.env.staging.local.example` (for example: `NEXT_PUBLIC_APP_NAME`).
+- Set mobile identity values in `mobile/.env.example` and `mobile/.env.staging.example` (for example: `PROJECT_NAME`).
+- Confirm package/app identifiers in `backend/pyproject.toml`, `frontend/package.json`, and `mobile/pubspec.yaml`.
+- Copy local env files from templates with `make copy-env` (creates `.env` variants when they do not already exist).
 
 ## Product Shape
 
@@ -23,14 +24,17 @@ Use this checklist when you are turning the boilerplate into a real project and 
 
 ## Validation
 
-- Run `make setup`
-- Run `make infra-up`
-- Run `make backend-migrate`
-- Run `make health-check`
-- Run `make ci`
+- Run `make setup`.
+- Run `make infra-up`.
+- Run `make backend-migrate`.
+- Run `make health-check`.
+- Run `make docs`.
+- Run `make deploy-readiness`.
+- Run `make ci`.
 
 ## Reading Path
 
-- Read [docs/onboarding/project-orientation.md](/Users/ankit/Projects/Python/fastapi/fastapi_template/docs/onboarding/project-orientation.md)
-- Read [docs/onboarding/template-finalization-checklist.md](/Users/ankit/Projects/Python/fastapi/fastapi_template/docs/onboarding/template-finalization-checklist.md)
-- Read [docs/infrastructure/production-hardening-checklist.md](/Users/ankit/Projects/Python/fastapi/fastapi_template/docs/infrastructure/production-hardening-checklist.md)
+- Read `docs/README.md`.
+- Read `docs/system-design/README.md`.
+- Read `docs/system-design/implementation/release-gate-checklist.md`.
+- Read `docs/system-design/infrastructure/production-readiness-definition-of-done.md`.
