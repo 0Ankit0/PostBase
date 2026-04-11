@@ -108,6 +108,7 @@ class TestKhaltiPayment:
                 "/api/v1/payments/initiate/",
                 json={
                     "provider": "khalti",
+                    "currency": "NPR",
                     "amount": 1000,
                     "purchase_order_id": "ORDER-001",
                     "purchase_order_name": "Test Order",
@@ -120,6 +121,8 @@ class TestKhaltiPayment:
         data = resp.json()
         assert data["provider"] == "khalti"
         assert data["status"] == "initiated"
+        assert data["amount"] == 1000
+        assert data["currency"] == "NPR"
         assert data["payment_url"] == "https://test-pay.khalti.com/?pidx=test_pidx_abc123"
         assert data["provider_pidx"] == "test_pidx_abc123"
         assert data["transaction_id"] is not None
@@ -145,6 +148,7 @@ class TestKhaltiPayment:
                 "/api/v1/payments/initiate/",
                 json={
                     "provider": "khalti",
+                    "currency": "NPR",
                     "amount": 1000,
                     "purchase_order_id": "ORDER-CUSTOMER-001",
                     "purchase_order_name": "Customer Order",
@@ -179,6 +183,7 @@ class TestKhaltiPayment:
                 "/api/v1/payments/initiate/",
                 json={
                     "provider": "khalti",
+                    "currency": "NPR",
                     "amount": 1000,
                     "purchase_order_id": "ORDER-ERR-READ",
                     "purchase_order_name": "Read Error Order",
@@ -198,6 +203,7 @@ class TestKhaltiPayment:
             "/api/v1/payments/initiate/",
             json={
                 "provider": "khalti",
+                "currency": "NPR",
                 "amount": 999,
                 "purchase_order_id": "ORDER-LOW-AMOUNT",
                 "purchase_order_name": "Low Amount Order",
@@ -225,6 +231,7 @@ class TestKhaltiPayment:
                 "/api/v1/payments/initiate/",
                 json={
                     "provider": "khalti",
+                    "currency": "NPR",
                     "amount": 1000,
                     "purchase_order_id": "ORDER-ERR",
                     "purchase_order_name": "Bad Order",
@@ -273,6 +280,7 @@ class TestKhaltiPayment:
                 "/api/v1/payments/verify/",
                 json={
                     "provider": "khalti",
+                    "currency": "NPR",
                     "pidx": "test_pidx_abc123",
                 },
             )
@@ -282,13 +290,15 @@ class TestKhaltiPayment:
         assert data["status"] == "completed"
         assert data["provider_transaction_id"] == "KHALTI_TXN_XYZ"
         assert data["transaction_id"] == tx.id
+        assert data["amount"] == 1000
+        assert data["currency"] == "NPR"
 
     @pytest.mark.unit
     async def test_khalti_verify_missing_pidx(self, client: AsyncClient):
         """Verifying without pidx should return 400."""
         resp = await client.post(
             "/api/v1/payments/verify/",
-            json={"provider": "khalti"},
+            json={"provider": "khalti", "currency": "NPR"},
         )
         assert resp.status_code == 400
 
@@ -328,7 +338,7 @@ class TestKhaltiPayment:
         with patch("src.apps.finance.services.khalti.httpx.AsyncClient", return_value=mock_client):
             resp = await client.post(
                 "/api/v1/payments/verify/",
-                json={"provider": "khalti", "pidx": "pidx_cancel"},
+                json={"provider": "khalti", "pidx": "pidx_cancel", "currency": "NPR"},
             )
 
         assert resp.status_code == 200
@@ -349,6 +359,7 @@ class TestEsewaPayment:
             "/api/v1/payments/initiate/",
             json={
                 "provider": "esewa",
+                "currency": "NPR",
                 "amount": 100,
                 "purchase_order_id": "ESEWA-ORDER-001",
                 "purchase_order_name": "Test eSewa Order",
@@ -360,6 +371,8 @@ class TestEsewaPayment:
         data = resp.json()
         assert data["provider"] == "esewa"
         assert data["status"] == "initiated"
+        assert data["amount"] == 100
+        assert data["currency"] == "NPR"
         assert data["payment_url"] is not None
         assert "form_fields" in data["extra"]
 
@@ -425,6 +438,7 @@ class TestEsewaPayment:
                 "/api/v1/payments/verify/",
                 json={
                     "provider": "esewa",
+                    "currency": "NPR",
                     "data": callback_data,
                 },
             )
@@ -433,6 +447,8 @@ class TestEsewaPayment:
         data = resp.json()
         assert data["status"] == "completed"
         assert data["transaction_id"] == tx.id
+        assert data["amount"] == 100
+        assert data["currency"] == "NPR"
 
     @pytest.mark.unit
     async def test_esewa_verify_invalid_signature(self, client: AsyncClient, db_session: AsyncSession):
@@ -449,7 +465,7 @@ class TestEsewaPayment:
 
         resp = await client.post(
             "/api/v1/payments/verify/",
-            json={"provider": "esewa", "data": bad_payload},
+            json={"provider": "esewa", "data": bad_payload, "currency": "NPR"},
         )
         assert resp.status_code == 400
 
@@ -458,7 +474,7 @@ class TestEsewaPayment:
         """Verifying eSewa without data param should return 400."""
         resp = await client.post(
             "/api/v1/payments/verify/",
-            json={"provider": "esewa"},
+            json={"provider": "esewa", "currency": "NPR"},
         )
         assert resp.status_code == 400
 
@@ -521,6 +537,7 @@ class TestTransactionCRUD:
             "/api/v1/payments/initiate/",
             json={
                 "provider": "khalti",
+                "currency": "NPR",
                 "amount": 0,
                 "purchase_order_id": "BAD",
                 "purchase_order_name": "Bad",
@@ -530,6 +547,61 @@ class TestTransactionCRUD:
         assert resp.status_code == 422
 
     @pytest.mark.unit
+    async def test_initiate_rejects_invalid_provider_currency(self, client: AsyncClient):
+        """Provider-specific currency validation should reject unsupported currencies."""
+        resp = await client.post(
+            "/api/v1/payments/initiate/",
+            json={
+                "provider": "khalti",
+                "amount": 1000,
+                "currency": "USD",
+                "purchase_order_id": "BAD-CURRENCY",
+                "purchase_order_name": "Bad Currency",
+                "return_url": "http://localhost/cb",
+            },
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.unit
+    async def test_initiate_enforces_provider_minimum(self, client: AsyncClient):
+        """Provider minimum checks should run at schema validation time."""
+        resp = await client.post(
+            "/api/v1/payments/initiate/",
+            json={
+                "provider": "stripe",
+                "amount": 49,
+                "currency": "USD",
+                "purchase_order_id": "BAD-MIN-STRIPE",
+                "purchase_order_name": "Bad Minimum",
+                "return_url": "http://localhost/cb",
+            },
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.unit
+    async def test_verify_rejects_currency_mismatch(self, client: AsyncClient, db_session: AsyncSession):
+        tx = PaymentTransaction(
+            provider=PaymentProvider.KHALTI,
+            amount=1000,
+            currency="NPR",
+            purchase_order_id="ORDER-MISMATCH",
+            purchase_order_name="Mismatch",
+            return_url="http://localhost/callback",
+            website_url="http://localhost",
+            status=PaymentStatus.INITIATED,
+            provider_pidx="pidx_mismatch",
+        )
+        db_session.add(tx)
+        await db_session.commit()
+
+        resp = await client.post(
+            "/api/v1/payments/verify/",
+            json={"provider": "khalti", "pidx": "pidx_mismatch", "currency": "USD"},
+        )
+        assert resp.status_code == 400
+        assert "Currency mismatch" in resp.json()["detail"]
+
+    @pytest.mark.unit
     async def test_unsupported_provider(self, client: AsyncClient):
         """Using a disabled provider should return 503."""
         # Stripe and PayPal are disabled by default (STRIPE_ENABLED=False)
@@ -537,6 +609,7 @@ class TestTransactionCRUD:
             "/api/v1/payments/initiate/",
             json={
                 "provider": "stripe",
+                "currency": "USD",
                 "amount": 1000,
                 "purchase_order_id": "STR-001",
                 "purchase_order_name": "Stripe Order",
@@ -568,10 +641,12 @@ class TestProviderFlags:
     async def test_disabled_provider_returns_503(self, client: AsyncClient):
         """Disabled providers should return 503, not 400."""
         for provider in ("stripe", "paypal"):
+            currency = "USD"
             resp = await client.post(
                 "/api/v1/payments/initiate/",
                 json={
                     "provider": provider,
+                    "currency": currency,
                     "amount": 1000,
                     "purchase_order_id": f"{provider}-order",
                     "purchase_order_name": "Test",
@@ -597,11 +672,12 @@ class TestProviderFlags:
         with patch(
             "src.apps.finance.services.stripe.stripe.checkout.Session.create",
             return_value=mock_session,
-        ):
+        ) as mock_create:
             resp = await client.post(
                 "/api/v1/payments/initiate/",
                 json={
                     "provider": "stripe",
+                    "currency": "USD",
                     "amount": 1000,
                     "purchase_order_id": "STR-ENABLED-001",
                     "purchase_order_name": "Stripe Test",
@@ -616,6 +692,11 @@ class TestProviderFlags:
         data = resp.json()
         assert data["provider"] == "stripe"
         assert data["provider_pidx"] == "cs_test_abc123"
+        assert data["amount"] == 1000
+        assert data["currency"] == "USD"
+        _, stripe_kwargs = mock_create.call_args
+        assert stripe_kwargs["line_items"][0]["price_data"]["unit_amount"] == 1000
+        assert stripe_kwargs["line_items"][0]["price_data"]["currency"] == "usd"
 
     @pytest.mark.unit
     async def test_paypal_enabled_flag(self, client: AsyncClient, db_session: AsyncSession):
@@ -639,11 +720,12 @@ class TestProviderFlags:
         with patch(
             "src.apps.finance.services.paypal.paypalrestsdk.Payment",
             return_value=mock_payment,
-        ):
+        ) as mock_paypal_payment:
             resp = await client.post(
                 "/api/v1/payments/initiate/",
                 json={
                     "provider": "paypal",
+                    "currency": "USD",
                     "amount": 1000,
                     "purchase_order_id": "PP-ENABLED-001",
                     "purchase_order_name": "PayPal Test",
@@ -658,3 +740,8 @@ class TestProviderFlags:
         data = resp.json()
         assert data["provider"] == "paypal"
         assert data["provider_pidx"] == "PAY-test123"
+        assert data["amount"] == 1000
+        assert data["currency"] == "USD"
+        paypal_payload = mock_paypal_payment.call_args[0][0]
+        assert paypal_payload["transactions"][0]["amount"]["total"] == "10.00"
+        assert paypal_payload["transactions"][0]["amount"]["currency"] == "USD"

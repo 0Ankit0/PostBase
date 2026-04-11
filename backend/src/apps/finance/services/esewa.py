@@ -92,7 +92,7 @@ class EsewaService(BasePaymentProvider):
         auto-submit the form.
         """
         transaction_uuid = str(uuid.uuid4())
-        total_amount = request.amount  # eSewa expects rupees (not paisa)
+        total_amount = request.amount
 
         signed_field_names = "total_amount,transaction_uuid,product_code"
         signing_payload = {
@@ -120,6 +120,7 @@ class EsewaService(BasePaymentProvider):
         tx = PaymentTransaction(
             provider=PaymentProvider.ESEWA,
             amount=request.amount,
+            currency=request.currency,
             purchase_order_id=request.purchase_order_id,
             purchase_order_name=request.purchase_order_name,
             return_url=request.return_url,
@@ -140,6 +141,8 @@ class EsewaService(BasePaymentProvider):
             status=PaymentStatus.INITIATED,
             payment_url=self.FORM_URL,
             provider_pidx=transaction_uuid,
+            amount=request.amount,
+            currency=request.currency,
             extra={
                 "form_action": self.FORM_URL,
                 "form_fields": form_data.model_dump(),
@@ -207,6 +210,10 @@ class EsewaService(BasePaymentProvider):
             raise ValueError(f"No transaction found for eSewa transaction_uuid={transaction_uuid}")
         if tx.user_id != current_user.id and not current_user.is_superuser:
             raise PermissionError("Not authorized to verify this transaction")
+        if tx.currency != request.currency:
+            raise ValueError(
+                f"Currency mismatch for eSewa verification: expected {tx.currency}, got {request.currency}"
+            )
 
         async with httpx.AsyncClient() as client:
             resp = await retry_async(
@@ -258,6 +265,7 @@ class EsewaService(BasePaymentProvider):
             provider=PaymentProvider.ESEWA,
             status=our_status,
             amount=tx.amount,
+            currency=tx.currency,
             provider_transaction_id=tx.provider_transaction_id,
             extra={
                 "callback": decoded,

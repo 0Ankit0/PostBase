@@ -76,7 +76,7 @@ class StripeService(BasePaymentProvider):
             line_items=[
                 {
                     "price_data": {
-                        "currency": "usd",
+                        "currency": request.currency.lower(),
                         "unit_amount": request.amount,  # Stripe expects cents
                         "product_data": {"name": request.purchase_order_name},
                     },
@@ -94,7 +94,7 @@ class StripeService(BasePaymentProvider):
         tx = PaymentTransaction(
             provider=PaymentProvider.STRIPE,
             amount=request.amount,
-            currency="usd",
+            currency=request.currency,
             purchase_order_id=request.purchase_order_id,
             purchase_order_name=request.purchase_order_name,
             return_url=request.return_url,
@@ -117,6 +117,8 @@ class StripeService(BasePaymentProvider):
             status=PaymentStatus.INITIATED,
             payment_url=session.url,
             provider_pidx=session.id,
+            amount=request.amount,
+            currency=request.currency,
             extra={"session_id": session.id},
         )
 
@@ -151,6 +153,10 @@ class StripeService(BasePaymentProvider):
             raise ValueError(f"No transaction found for Stripe session_id={session_id}")
         if tx.user_id != current_user.id and not current_user.is_superuser:
             raise PermissionError("Not authorized to verify this transaction")
+        if tx.currency != request.currency:
+            raise ValueError(
+                f"Currency mismatch for Stripe verification: expected {tx.currency}, got {request.currency}"
+            )
 
         session = stripe.checkout.Session.retrieve(session_id)
         our_status = _STATUS_MAP.get(session.status, PaymentStatus.FAILED)
@@ -175,6 +181,7 @@ class StripeService(BasePaymentProvider):
             provider=PaymentProvider.STRIPE,
             status=our_status,
             amount=tx.amount,
+            currency=tx.currency,
             provider_transaction_id=session.payment_intent,
             extra={
                 "session_id": session.id,

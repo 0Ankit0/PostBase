@@ -4,7 +4,7 @@ Includes generic schemas usable across all providers, plus provider-specific
 schemas for Khalti and eSewa.
 """
 from typing import Any, Optional
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, model_validator, field_serializer, field_validator
 
 from src.apps.finance.models.payment import PaymentProvider, PaymentStatus
 from src.apps.iam.utils.hashid import decode_id, encode_id
@@ -17,7 +17,8 @@ from src.apps.iam.utils.hashid import decode_id, encode_id
 class InitiatePaymentRequest(BaseModel):
     """Request body to initiate a payment regardless of provider."""
     provider: PaymentProvider
-    amount: int  # smallest currency unit (paisa for NPR)
+    amount: int  # canonical contract: smallest currency unit (e.g. paisa/cents)
+    currency: str
     purchase_order_id: str
     purchase_order_name: str
     return_url: str
@@ -33,12 +34,49 @@ class InitiatePaymentRequest(BaseModel):
             raise ValueError("amount must be a positive integer (in smallest currency unit)")
         return v
 
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        currency = value.strip().upper()
+        if len(currency) != 3 or not currency.isalpha():
+            raise ValueError("currency must be a valid 3-letter ISO 4217 code")
+        return currency
+
+    @model_validator(mode="after")
+    def validate_provider_constraints(self) -> "InitiatePaymentRequest":
+        accepted_currency_by_provider: dict[PaymentProvider, set[str]] = {
+            PaymentProvider.KHALTI: {"NPR"},
+            PaymentProvider.ESEWA: {"NPR"},
+            PaymentProvider.STRIPE: {"USD"},
+            PaymentProvider.PAYPAL: {"USD"},
+        }
+        minimum_minor_units_by_provider: dict[PaymentProvider, int] = {
+            PaymentProvider.KHALTI: 1000,
+            PaymentProvider.ESEWA: 1,
+            PaymentProvider.STRIPE: 50,
+            PaymentProvider.PAYPAL: 1,
+        }
+
+        accepted = accepted_currency_by_provider.get(self.provider, set())
+        if accepted and self.currency not in accepted:
+            allowed = ", ".join(sorted(accepted))
+            raise ValueError(f"{self.provider.value} only supports currency: {allowed}")
+
+        minimum = minimum_minor_units_by_provider.get(self.provider)
+        if minimum is not None and self.amount < minimum:
+            raise ValueError(
+                f"{self.provider.value} amount must be at least {minimum} in minor units."
+            )
+        return self
+
 
 class InitiatePaymentResponse(BaseModel):
     """Response after successfully initiating a payment."""
     transaction_id: int          # our internal DB id
     provider: PaymentProvider
     status: PaymentStatus
+    amount: int
+    currency: str
     payment_url: Optional[str] = None   # URL to redirect the user to
     provider_pidx: Optional[str] = None # Khalti pidx / eSewa ref
     extra: Optional[dict[str, Any]] = None  # provider-specific extras
@@ -51,6 +89,7 @@ class InitiatePaymentResponse(BaseModel):
 class VerifyPaymentRequest(BaseModel):
     """Request body to verify / confirm a payment callback."""
     provider: PaymentProvider
+    currency: str
     pidx: Optional[str] = None          # Khalti uses pidx
     oid: Optional[str] = None           # eSewa uses oid (our purchase_order_id)
     refId: Optional[str] = None         # eSewa legacy refId
@@ -68,6 +107,14 @@ class VerifyPaymentRequest(BaseModel):
             return decoded
         return value
 
+    @field_validator("currency")
+    @classmethod
+    def normalize_verify_currency(cls, value: str) -> str:
+        currency = value.strip().upper()
+        if len(currency) != 3 or not currency.isalpha():
+            raise ValueError("currency must be a valid 3-letter ISO 4217 code")
+        return currency
+
 
 class VerifyPaymentResponse(BaseModel):
     """Normalised verification response from any provider."""
@@ -75,6 +122,7 @@ class VerifyPaymentResponse(BaseModel):
     provider: PaymentProvider
     status: PaymentStatus
     amount: Optional[int] = None
+    currency: Optional[str] = None
     provider_transaction_id: Optional[str] = None
     extra: Optional[dict[str, Any]] = None
 
