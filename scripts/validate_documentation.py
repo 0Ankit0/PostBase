@@ -86,6 +86,9 @@ REQUIRED_HEADINGS = {
 }
 
 PARITY_ALLOWED = {"implemented", "partial", "planned"}
+LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+ABSOLUTE_LOCAL_PATH_PATTERN = re.compile(r"^(?:/|[A-Za-z]:[\\/]|file://)")
+DOC_LINK_VALIDATION_FILES = [REPO_ROOT / "TEMPLATE_RELEASE_CHECKLIST.md"]
 
 
 def is_empty(path: Path) -> bool:
@@ -112,6 +115,41 @@ def validate_parity_markers(path: Path, errors: list[str]) -> None:
         errors.append(
             f"{path.relative_to(REPO_ROOT)} missing parity status marker(s): {', '.join(sorted(missing))}"
         )
+
+
+def _is_external_or_anchor(link: str) -> bool:
+    return link.startswith(("http://", "https://", "mailto:", "tel:", "#"))
+
+
+def validate_internal_links(path: Path, errors: list[str]) -> None:
+    text = path.read_text(encoding="utf-8")
+    for link in LINK_PATTERN.findall(text):
+        if _is_external_or_anchor(link):
+            continue
+
+        if ABSOLUTE_LOCAL_PATH_PATTERN.match(link):
+            errors.append(
+                f"{path.relative_to(REPO_ROOT)} contains absolute local link: {link}"
+            )
+            continue
+
+        target = link.split("#", 1)[0]
+        if not target:
+            continue
+
+        resolved = (path.parent / target).resolve()
+        try:
+            resolved.relative_to(REPO_ROOT)
+        except ValueError:
+            errors.append(
+                f"{path.relative_to(REPO_ROOT)} links outside repository root: {link}"
+            )
+            continue
+
+        if not resolved.exists():
+            errors.append(
+                f"{path.relative_to(REPO_ROOT)} contains dead internal link: {link}"
+            )
 
 
 def main() -> int:
@@ -145,6 +183,12 @@ def main() -> int:
     parity_path = SYSTEM_DESIGN_ROOT / "parity-matrix.md"
     if parity_path.exists():
         validate_parity_markers(parity_path, errors)
+
+    for path in DOC_LINK_VALIDATION_FILES:
+        if not path.exists():
+            errors.append(f"Missing checklist file for link validation: {path.relative_to(REPO_ROOT)}")
+            continue
+        validate_internal_links(path, errors)
 
     if errors:
         print("Documentation validation failed:")
