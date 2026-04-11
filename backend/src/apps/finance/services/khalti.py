@@ -95,9 +95,6 @@ class KhaltiService(BasePaymentProvider):
 
         Returns the ``payment_url`` the client should redirect the user to.
         """
-        if request.amount < 1000:
-            raise ValueError("Khalti amount must be at least 1000 paisa (NPR 10).")
-
         customer_info: dict = {}
         if request.customer_name:
             customer_info["name"] = request.customer_name
@@ -126,6 +123,7 @@ class KhaltiService(BasePaymentProvider):
             tx = PaymentTransaction(
                 provider=PaymentProvider.KHALTI,
                 amount=request.amount,
+                currency=request.currency,
                 purchase_order_id=request.purchase_order_id,
                 purchase_order_name=request.purchase_order_name,
                 return_url=request.return_url,
@@ -146,6 +144,7 @@ class KhaltiService(BasePaymentProvider):
         tx = PaymentTransaction(
             provider=PaymentProvider.KHALTI,
             amount=request.amount,
+            currency=request.currency,
             purchase_order_id=request.purchase_order_id,
             purchase_order_name=request.purchase_order_name,
             return_url=request.return_url,
@@ -165,6 +164,8 @@ class KhaltiService(BasePaymentProvider):
             status=PaymentStatus.INITIATED,
             payment_url=payment_url,
             provider_pidx=pidx,
+            amount=request.amount,
+            currency=request.currency,
             extra=data,
         )
 
@@ -197,6 +198,10 @@ class KhaltiService(BasePaymentProvider):
             raise ValueError(f"No transaction found for Khalti pidx={pidx}")
         if tx.user_id != current_user.id and not current_user.is_superuser:
             raise PermissionError("Not authorized to verify this transaction")
+        if tx.currency != request.currency:
+            raise ValueError(
+                f"Currency mismatch for Khalti verification: expected {tx.currency}, got {request.currency}"
+            )
 
         try:
             resp = await self._post_khalti("epayment/lookup/", {"pidx": pidx})
@@ -231,7 +236,8 @@ class KhaltiService(BasePaymentProvider):
             transaction_id=tx.id,
             provider=PaymentProvider.KHALTI,
             status=our_status,
-            amount=data.get("total_amount"),
+            amount=tx.amount,
+            currency=tx.currency,
             provider_transaction_id=transaction_id_provider,
             extra=data,
         )

@@ -74,8 +74,7 @@ class PayPalService(BasePaymentProvider):
         not cents).  We store the original ``amount`` (minor units / paisa)
         in the DB and convert to dollars for the PayPal API call.
         """
-        # Convert from cents to dollars for PayPal (assumes USD cents input)
-        amount_dollars = f"{request.amount / 100:.2f}"
+        amount_major = f"{request.amount / 100:.2f}"
 
         payment = paypalrestsdk.Payment(
             {
@@ -88,8 +87,8 @@ class PayPalService(BasePaymentProvider):
                 "transactions": [
                     {
                         "amount": {
-                            "total": amount_dollars,
-                            "currency": "USD",
+                            "total": amount_major,
+                            "currency": request.currency,
                         },
                         "description": request.purchase_order_name,
                         "invoice_number": request.purchase_order_id,
@@ -104,6 +103,7 @@ class PayPalService(BasePaymentProvider):
             tx = PaymentTransaction(
                 provider=PaymentProvider.PAYPAL,
                 amount=request.amount,
+                currency=request.currency,
                 purchase_order_id=request.purchase_order_id,
                 purchase_order_name=request.purchase_order_name,
                 return_url=request.return_url,
@@ -126,6 +126,7 @@ class PayPalService(BasePaymentProvider):
         tx = PaymentTransaction(
             provider=PaymentProvider.PAYPAL,
             amount=request.amount,
+            currency=request.currency,
             purchase_order_id=request.purchase_order_id,
             purchase_order_name=request.purchase_order_name,
             return_url=request.return_url,
@@ -145,6 +146,8 @@ class PayPalService(BasePaymentProvider):
             status=PaymentStatus.INITIATED,
             payment_url=approval_url,
             provider_pidx=payment.id,
+            amount=request.amount,
+            currency=request.currency,
             extra={"payment_id": payment.id},
         )
 
@@ -187,6 +190,10 @@ class PayPalService(BasePaymentProvider):
             raise ValueError(f"No transaction found for PayPal paymentId={payment_id}")
         if tx.user_id != current_user.id and not current_user.is_superuser:
             raise PermissionError("Not authorized to verify this transaction")
+        if tx.currency != request.currency:
+            raise ValueError(
+                f"Currency mismatch for PayPal verification: expected {tx.currency}, got {request.currency}"
+            )
 
         payment = paypalrestsdk.Payment.find(payment_id, api=_get_api())
         if not payment.execute({"payer_id": payer_id}):
@@ -214,6 +221,7 @@ class PayPalService(BasePaymentProvider):
             provider=PaymentProvider.PAYPAL,
             status=our_status,
             amount=tx.amount,
+            currency=tx.currency,
             provider_transaction_id=tx.provider_transaction_id,
             extra={"payment_id": payment.id, "state": payment.state},
         )

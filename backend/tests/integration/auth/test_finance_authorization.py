@@ -52,13 +52,17 @@ async def test_private_payment_routes_require_auth(client: AsyncClient):
     body = {
         "provider": "khalti",
         "amount": 1000,
+        "currency": "NPR",
         "purchase_order_id": "AUTH-REQ-001",
         "purchase_order_name": "Auth Required",
         "return_url": "http://localhost:3000/callback",
     }
 
     initiate = await client.post("/api/v1/payments/initiate/", json=body)
-    verify = await client.post("/api/v1/payments/verify/", json={"provider": "khalti", "pidx": "pidx"})
+    verify = await client.post(
+        "/api/v1/payments/verify/",
+        json={"provider": "khalti", "pidx": "pidx", "currency": "NPR"},
+    )
     providers = await client.get("/api/v1/payments/providers/")
     listing = await client.get("/api/v1/payments/")
     detail = await client.get("/api/v1/payments/abc123/")
@@ -109,7 +113,11 @@ async def test_user_cannot_access_or_verify_another_users_transaction(
 
     verify_resp = await client.post(
         "/api/v1/payments/verify/",
-        json={"provider": "esewa", "data": _esewa_callback_data("owner-uuid-123", total_amount=100)},
+        json={
+            "provider": "esewa",
+            "data": _esewa_callback_data("owner-uuid-123", total_amount=100),
+            "currency": "NPR",
+        },
         headers=attacker_headers,
     )
     assert verify_resp.status_code == 403
