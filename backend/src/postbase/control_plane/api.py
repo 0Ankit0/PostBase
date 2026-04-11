@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Any, Awaitable, Callable, TypeVar
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -57,8 +61,12 @@ from src.postbase.control_plane.service import (
     set_project_lifecycle_state,
     set_environment_lifecycle_state,
     create_secret_ref,
+    build_idempotency_endpoint_fingerprint,
+    build_idempotency_request_hash,
+    check_idempotency_replay,
     apply_schema_migration,
     retry_schema_migration,
+    reserve_idempotency_key,
     cancel_schema_migration,
     execute_migration_reconciliation,
     ensure_environment_access,
@@ -67,6 +75,7 @@ from src.postbase.control_plane.service import (
     revoke_secret_ref,
     rotate_secret_ref,
     set_binding_status,
+    persist_idempotency_success,
 )
 from src.postbase.capabilities.events.webhook_jobs import replay_dead_letter_webhook_jobs
 from src.postbase.domain.models import (
@@ -106,6 +115,7 @@ CONTROL_PLANE_MUTATION_MIN_ROLES: dict[str, TenantRole] = {
     "tables": TenantRole.ADMIN,
     "environment_lifecycle": TenantRole.ADMIN,
 }
+TMutationResult = TypeVar("TMutationResult")
 
 
 def _allowed_roles(min_role: TenantRole) -> tuple[TenantRole, ...]:
@@ -114,6 +124,71 @@ def _allowed_roles(min_role: TenantRole) -> tuple[TenantRole, ...]:
     if min_role == TenantRole.ADMIN:
         return (TenantRole.OWNER, TenantRole.ADMIN)
     return (TenantRole.OWNER, TenantRole.ADMIN, TenantRole.MEMBER)
+
+
+async def _execute_idempotent_mutation(
+    *,
+    request: Request,
+    db: AsyncSession,
+    current_user: User,
+    request_payload: dict[str, Any],
+    success_status_code: int,
+    execute: Callable[[], Awaitable[TMutationResult]],
+    serialize_response: Callable[[TMutationResult], dict[str, Any]],
+) -> TMutationResult | JSONResponse:
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if not idempotency_key:
+        return await execute()
+
+    endpoint_path = request.scope.get("route").path if request.scope.get("route") else request.url.path
+    endpoint_fingerprint = build_idempotency_endpoint_fingerprint(method=request.method, path=endpoint_path)
+    request_hash = build_idempotency_request_hash(
+        {
+            "path_params": request.path_params,
+            "query_params": sorted(request.query_params.multi_items()),
+            "payload": request_payload,
+        }
+    )
+    replay = await check_idempotency_replay(
+        db,
+        idempotency_key=idempotency_key,
+        actor_user_id=current_user.id,
+        endpoint_fingerprint=endpoint_fingerprint,
+        request_hash=request_hash,
+    )
+    if replay is not None:
+        return JSONResponse(status_code=replay.status_code, content=replay.response_json)
+
+    try:
+        idempotency_record = await reserve_idempotency_key(
+            db,
+            idempotency_key=idempotency_key,
+            actor_user_id=current_user.id,
+            endpoint_fingerprint=endpoint_fingerprint,
+            request_hash=request_hash,
+        )
+    except IntegrityError:
+        await db.rollback()
+        replay = await check_idempotency_replay(
+            db,
+            idempotency_key=idempotency_key,
+            actor_user_id=current_user.id,
+            endpoint_fingerprint=endpoint_fingerprint,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return JSONResponse(status_code=replay.status_code, content=replay.response_json)
+        raise
+
+    result = await execute()
+    await persist_idempotency_success(
+        db,
+        idempotency_record=idempotency_record,
+        response_status_code=success_status_code,
+        response_json=serialize_response(result),
+    )
+    await db.commit()
+    return result
 
 
 async def _load_environment_or_404(db: AsyncSession, environment_id: str) -> Environment:
@@ -220,6 +295,52 @@ async def _to_binding_read(
     )
 
 
+async def _create_switchover_execute(
+    *,
+    db: AsyncSession,
+    binding_id: str,
+    payload: SwitchoverCreate,
+    current_user: User,
+) -> SwitchoverPlan:
+    binding, environment, project = await _load_binding_environment_and_project(
+        db,
+        binding_id=binding_id,
+        current_user=current_user,
+        action="switchovers",
+    )
+    return await create_switchover_plan(
+        db,
+        binding=binding,
+        target_provider_key=payload.target_provider_key,
+        actor=current_user,
+        project=project,
+        environment=environment,
+        strategy=payload.strategy,
+        retirement_strategy=payload.retirement_strategy,
+    )
+
+
+async def _execute_switchover_execute(
+    *,
+    db: AsyncSession,
+    switchover_id: str,
+    current_user: User,
+) -> SwitchoverPlan:
+    switchover, _, environment, project = await _load_switchover_context(
+        db,
+        switchover_id=switchover_id,
+        current_user=current_user,
+        action="switchovers",
+    )
+    return await execute_switchover_plan(
+        db,
+        switchover=switchover,
+        actor=current_user,
+        project=project,
+        environment=environment,
+    )
+
+
 @router.get("/provider-catalog", response_model=PaginatedResponse[ProviderCatalogRead])
 async def list_provider_catalog(
     skip: int = Query(default=0, ge=0),
@@ -259,18 +380,30 @@ async def list_provider_catalog(
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(
+    request: Request,
     payload: ProjectCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Project:
-    return await create_project_for_tenant(
-        db,
-        tenant_id_hash=payload.tenant_id,
-        name=payload.name,
-        slug=payload.slug,
-        description=payload.description,
-        actor=current_user,
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
+        current_user=current_user,
+        request_payload=payload.model_dump(mode="json"),
+        success_status_code=status.HTTP_201_CREATED,
+        execute=lambda: create_project_for_tenant(
+            db,
+            tenant_id_hash=payload.tenant_id,
+            name=payload.name,
+            slug=payload.slug,
+            description=payload.description,
+            actor=current_user,
+        ),
+        serialize_response=lambda project: ProjectRead.model_validate(project).model_dump(mode="json"),
     )
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.post("/projects/{project_id}/lifecycle", response_model=ProjectRead)
@@ -327,20 +460,32 @@ async def list_projects(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_environment(
+    request: Request,
     project_id: str,
     payload: EnvironmentCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Environment:
-    return await create_environment_for_project(
-        db,
-        project_id_hash=project_id,
-        name=payload.name,
-        slug=payload.slug,
-        stage=payload.stage.value,
-        region_preference=payload.region_preference,
-        actor=current_user,
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
+        current_user=current_user,
+        request_payload={"project_id": project_id, **payload.model_dump(mode="json")},
+        success_status_code=status.HTTP_201_CREATED,
+        execute=lambda: create_environment_for_project(
+            db,
+            project_id_hash=project_id,
+            name=payload.name,
+            slug=payload.slug,
+            stage=payload.stage.value,
+            region_preference=payload.region_preference,
+            actor=current_user,
+        ),
+        serialize_response=lambda environment: EnvironmentRead.model_validate(environment).model_dump(mode="json"),
     )
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.get("/projects/{project_id}/environments", response_model=PaginatedResponse[EnvironmentRead])
@@ -443,93 +588,109 @@ async def list_bindings(
 
 @router.post("/environments/{environment_id}/bindings", response_model=BindingRead)
 async def upsert_binding(
+    request: Request,
     environment_id: str,
     payload: BindingCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> BindingRead:
-    environment = await _load_environment_or_404(db, environment_id)
-    project = await _authorize_environment_mutation(
-        db,
-        environment=environment,
-        current_user=current_user,
-        action="bindings",
-    )
-    capability = (
-        await db.execute(select(CapabilityType).where(CapabilityType.key == payload.capability_key))
-    ).scalars().first()
-    if capability is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Capability not found")
-    provider = (
-        await db.execute(
-            select(ProviderCatalogEntry).where(
-                ProviderCatalogEntry.capability_type_id == capability.id,
-                ProviderCatalogEntry.provider_key == payload.provider_key,
-            )
+    async def _execute() -> BindingRead:
+        environment = await _load_environment_or_404(db, environment_id)
+        project = await _authorize_environment_mutation(
+            db,
+            environment=environment,
+            current_user=current_user,
+            action="bindings",
         )
-    ).scalars().first()
-    if provider is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+        capability = (
+            await db.execute(select(CapabilityType).where(CapabilityType.key == payload.capability_key))
+        ).scalars().first()
+        if capability is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Capability not found")
+        provider = (
+            await db.execute(
+                select(ProviderCatalogEntry).where(
+                    ProviderCatalogEntry.capability_type_id == capability.id,
+                    ProviderCatalogEntry.provider_key == payload.provider_key,
+                )
+            )
+        ).scalars().first()
+        if provider is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
 
-    secret_ref_ids = [decode_id_or_404(secret_ref_id) for secret_ref_id in payload.secret_ref_ids]
-    binding = await create_binding_version(
-        db,
-        environment=environment,
-        capability=capability,
-        provider=provider,
-        actor=current_user,
-        project=project,
-        config_json=payload.config_json,
-        region=payload.region,
-        secret_ref_ids=secret_ref_ids,
+        secret_ref_ids = [decode_id_or_404(secret_ref_id) for secret_ref_id in payload.secret_ref_ids]
+        binding = await create_binding_version(
+            db,
+            environment=environment,
+            capability=capability,
+            provider=provider,
+            actor=current_user,
+            project=project,
+            config_json=payload.config_json,
+            region=payload.region,
+            secret_ref_ids=secret_ref_ids,
+        )
+        return await _to_binding_read(db, binding, capability, provider)
+
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
+        current_user=current_user,
+        request_payload={"environment_id": environment_id, **payload.model_dump(mode="json")},
+        success_status_code=status.HTTP_200_OK,
+        execute=_execute,
+        serialize_response=lambda binding: binding.model_dump(mode="json"),
     )
-    return await _to_binding_read(db, binding, capability, provider)
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.post("/bindings/{binding_id}/switchovers", response_model=SwitchoverRead)
 async def create_switchover(
+    request: Request,
     binding_id: str,
     payload: SwitchoverCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> SwitchoverPlan:
-    binding, environment, project = await _load_binding_environment_and_project(
-        db,
-        binding_id=binding_id,
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
         current_user=current_user,
-        action="switchovers",
+        request_payload={"binding_id": binding_id, **payload.model_dump(mode="json")},
+        success_status_code=status.HTTP_200_OK,
+        execute=lambda: _create_switchover_execute(
+            db=db, binding_id=binding_id, payload=payload, current_user=current_user
+        ),
+        serialize_response=lambda switchover: SwitchoverRead.model_validate(switchover).model_dump(mode="json"),
     )
-    return await create_switchover_plan(
-        db,
-        binding=binding,
-        target_provider_key=payload.target_provider_key,
-        actor=current_user,
-        project=project,
-        environment=environment,
-        strategy=payload.strategy,
-        retirement_strategy=payload.retirement_strategy,
-    )
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.post("/switchovers/{switchover_id}/execute", response_model=SwitchoverRead)
 async def execute_switchover(
+    request: Request,
     switchover_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> SwitchoverPlan:
-    switchover, _, environment, project = await _load_switchover_context(
-        db,
-        switchover_id=switchover_id,
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
         current_user=current_user,
-        action="switchovers",
+        request_payload={"switchover_id": switchover_id},
+        success_status_code=status.HTTP_200_OK,
+        execute=lambda: _execute_switchover_execute(
+            db=db, switchover_id=switchover_id, current_user=current_user
+        ),
+        serialize_response=lambda switchover: SwitchoverRead.model_validate(switchover).model_dump(mode="json"),
     )
-    return await execute_switchover_plan(
-        db,
-        switchover=switchover,
-        actor=current_user,
-        project=project,
-        environment=environment,
-    )
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.get("/bindings/{binding_id}/switchovers", response_model=PaginatedResponse[SwitchoverRead])
@@ -604,31 +765,46 @@ async def get_switchover(
 
 @router.post("/bindings/{binding_id}/status", response_model=BindingRead)
 async def update_binding_status(
+    request: Request,
     binding_id: str,
     payload: BindingStatusUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> BindingRead:
-    binding, environment, project = await _load_binding_environment_and_project(
-        db,
-        binding_id=binding_id,
+    async def _execute() -> BindingRead:
+        binding, environment, project = await _load_binding_environment_and_project(
+            db,
+            binding_id=binding_id,
+            current_user=current_user,
+            action="bindings",
+        )
+        capability = await db.get(CapabilityType, binding.capability_type_id)
+        provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
+        if capability is None or provider is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding metadata not found")
+        binding_updated = await set_binding_status(
+            db,
+            binding=binding,
+            status_value=payload.status,
+            reason=payload.reason,
+            actor=current_user,
+            project=project,
+            environment=environment,
+        )
+        return await _to_binding_read(db, binding_updated, capability, provider)
+
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
         current_user=current_user,
-        action="bindings",
+        request_payload={"binding_id": binding_id, **payload.model_dump(mode="json")},
+        success_status_code=status.HTTP_200_OK,
+        execute=_execute,
+        serialize_response=lambda binding: binding.model_dump(mode="json"),
     )
-    capability = await db.get(CapabilityType, binding.capability_type_id)
-    provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
-    if capability is None or provider is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding metadata not found")
-    binding = await set_binding_status(
-        db,
-        binding=binding,
-        status_value=payload.status,
-        reason=payload.reason,
-        actor=current_user,
-        project=project,
-        environment=environment,
-    )
-    return await _to_binding_read(db, binding, capability, provider)
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.get("/environments/{environment_id}/keys", response_model=PaginatedResponse[EnvironmentApiKeyRead])
@@ -1192,30 +1368,45 @@ async def list_environment_migrations(
     response_model=MigrationRead,
 )
 async def apply_environment_migration(
+    request: Request,
     environment_id: str,
     migration_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> MigrationRead:
-    environment = await _load_environment_or_404(db, environment_id)
-    migration_db_id = decode_id_or_404(migration_id)
-    project = await _authorize_environment_mutation(
-        db,
-        environment=environment,
+    async def _execute() -> MigrationRead:
+        environment = await _load_environment_or_404(db, environment_id)
+        migration_db_id = decode_id_or_404(migration_id)
+        project = await _authorize_environment_mutation(
+            db,
+            environment=environment,
+            current_user=current_user,
+            action="migrations",
+        )
+        migration = await db.get(SchemaMigration, migration_db_id)
+        if migration is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+        migration = await apply_schema_migration(
+            db,
+            migration=migration,
+            environment=environment,
+            project=project,
+            actor=current_user,
+        )
+        return await _to_migration_read(db, migration)
+
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
         current_user=current_user,
-        action="migrations",
+        request_payload={"environment_id": environment_id, "migration_id": migration_id},
+        success_status_code=status.HTTP_200_OK,
+        execute=_execute,
+        serialize_response=lambda migration: migration.model_dump(mode="json"),
     )
-    migration = await db.get(SchemaMigration, migration_db_id)
-    if migration is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
-    migration = await apply_schema_migration(
-        db,
-        migration=migration,
-        environment=environment,
-        project=project,
-        actor=current_user,
-    )
-    return await _to_migration_read(db, migration)
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.post(
@@ -1223,47 +1414,62 @@ async def apply_environment_migration(
     response_model=MigrationRollbackResult,
 )
 async def retry_environment_migration(
+    request: Request,
     environment_id: str,
     migration_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> MigrationRollbackResult:
-    environment = await _load_environment_or_404(db, environment_id)
-    migration_db_id = decode_id_or_404(migration_id)
-    project = await _authorize_environment_mutation(
-        db,
-        environment=environment,
+    async def _execute() -> MigrationRollbackResult:
+        environment = await _load_environment_or_404(db, environment_id)
+        migration_db_id = decode_id_or_404(migration_id)
+        project = await _authorize_environment_mutation(
+            db,
+            environment=environment,
+            current_user=current_user,
+            action="migrations",
+        )
+        migration = await db.get(SchemaMigration, migration_db_id)
+        if migration is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+        migration = await retry_schema_migration(
+            db,
+            migration=migration,
+            environment=environment,
+            project=project,
+            actor=current_user,
+        )
+        await record_audit_event(
+            db,
+            action="migration.retry_requested",
+            entity_type="schema_migration",
+            entity_id=str(migration.id),
+            actor_user_id=current_user.id,
+            tenant_id=project.tenant_id,
+            project_id=project.id,
+            environment_id=environment.id,
+            payload={"version": migration.version, "outcome": "allowed"},
+        )
+        await db.commit()
+        migration_read = await _to_migration_read(db, migration)
+        return MigrationRollbackResult(
+            migration=migration_read,
+            rollback_sql=f"-- retry for migration {migration.version}",
+            rollback_status="requested",
+        )
+
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
         current_user=current_user,
-        action="migrations",
+        request_payload={"environment_id": environment_id, "migration_id": migration_id},
+        success_status_code=status.HTTP_200_OK,
+        execute=_execute,
+        serialize_response=lambda migration_result: migration_result.model_dump(mode="json"),
     )
-    migration = await db.get(SchemaMigration, migration_db_id)
-    if migration is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
-    migration = await retry_schema_migration(
-        db,
-        migration=migration,
-        environment=environment,
-        project=project,
-        actor=current_user,
-    )
-    await record_audit_event(
-        db,
-        action="migration.retry_requested",
-        entity_type="schema_migration",
-        entity_id=str(migration.id),
-        actor_user_id=current_user.id,
-        tenant_id=project.tenant_id,
-        project_id=project.id,
-        environment_id=environment.id,
-        payload={"version": migration.version, "outcome": "allowed"},
-    )
-    await db.commit()
-    migration_read = await _to_migration_read(db, migration)
-    return MigrationRollbackResult(
-        migration=migration_read,
-        rollback_sql=f"-- retry for migration {migration.version}",
-        rollback_status="requested",
-    )
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.post(
@@ -1271,36 +1477,55 @@ async def retry_environment_migration(
     response_model=MigrationRead,
 )
 async def reconcile_environment_migration(
+    request: Request,
     environment_id: str,
     migration_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> MigrationRead:
-    environment = await _load_environment_or_404(db, environment_id)
-    migration_db_id = decode_id_or_404(migration_id)
-    project = await _authorize_environment_mutation(
-        db,
-        environment=environment,
+    async def _execute() -> MigrationRead:
+        environment = await _load_environment_or_404(db, environment_id)
+        migration_db_id = decode_id_or_404(migration_id)
+        project = await _authorize_environment_mutation(
+            db,
+            environment=environment,
+            current_user=current_user,
+            action="migrations",
+        )
+        migration = await db.get(SchemaMigration, migration_db_id)
+        if migration is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
+        refreshed = await execute_migration_reconciliation(db, migration=migration)
+        await record_audit_event(
+            db,
+            action="migration.reconciled",
+            entity_type="schema_migration",
+            entity_id=str(refreshed.id),
+            actor_user_id=current_user.id,
+            tenant_id=project.tenant_id,
+            project_id=project.id,
+            environment_id=environment.id,
+            payload={
+                "version": refreshed.version,
+                "reconciliation_status": refreshed.reconciliation_status,
+                "outcome": "allowed",
+            },
+        )
+        await db.commit()
+        return await _to_migration_read(db, refreshed)
+
+    result = await _execute_idempotent_mutation(
+        request=request,
+        db=db,
         current_user=current_user,
-        action="migrations",
+        request_payload={"environment_id": environment_id, "migration_id": migration_id},
+        success_status_code=status.HTTP_200_OK,
+        execute=_execute,
+        serialize_response=lambda migration: migration.model_dump(mode="json"),
     )
-    migration = await db.get(SchemaMigration, migration_db_id)
-    if migration is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Migration not found")
-    refreshed = await execute_migration_reconciliation(db, migration=migration)
-    await record_audit_event(
-        db,
-        action="migration.reconciled",
-        entity_type="schema_migration",
-        entity_id=str(refreshed.id),
-        actor_user_id=current_user.id,
-        tenant_id=project.tenant_id,
-        project_id=project.id,
-        environment_id=environment.id,
-        payload={"version": refreshed.version, "reconciliation_status": refreshed.reconciliation_status, "outcome": "allowed"},
-    )
-    await db.commit()
-    return await _to_migration_read(db, refreshed)
+    if isinstance(result, JSONResponse):
+        return result
+    return result
 
 
 @router.post(

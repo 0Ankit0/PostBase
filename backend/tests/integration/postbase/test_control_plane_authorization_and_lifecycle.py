@@ -130,3 +130,80 @@ async def test_binding_activation_blocked_when_required_secret_missing(client, d
     )
     assert activate_response.status_code == 409, activate_response.text
     assert "missing or expired secrets" in activate_response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_project_create_idempotency_replays_duplicate_submit(client, db_session):
+    suffix = uuid4().hex[:8]
+    owner_headers = await _signup(client, username=f"idem_owner_{suffix}", email=f"idem_owner_{suffix}@example.com")
+    owner = (
+        await db_session.execute(select(User).where(User.email == f"idem_owner_{suffix}@example.com"))
+    ).scalars().first()
+    tenant = Tenant(name=f"idem-{suffix}", slug=f"idem-{suffix}", description="idem tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+
+    payload = {
+        "tenant_id": encode_id(tenant.id),
+        "name": "Idempotent Project",
+        "slug": f"idem-project-{suffix}",
+        "description": "first create",
+    }
+    idem_headers = {**owner_headers, "Idempotency-Key": f"project-create-{suffix}"}
+    first = await client.post("/api/v1/projects", headers=idem_headers, json=payload)
+    assert first.status_code == 201, first.text
+    second = await client.post("/api/v1/projects", headers=idem_headers, json=payload)
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] == second.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_project_create_idempotency_rejects_conflicting_payload(client, db_session):
+    suffix = uuid4().hex[:8]
+    owner_headers = await _signup(client, username=f"idem_conf_owner_{suffix}", email=f"idem_conf_owner_{suffix}@example.com")
+    owner = (
+        await db_session.execute(select(User).where(User.email == f"idem_conf_owner_{suffix}@example.com"))
+    ).scalars().first()
+    tenant = Tenant(name=f"idemc-{suffix}", slug=f"idemc-{suffix}", description="idem tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+
+    key_headers = {**owner_headers, "Idempotency-Key": f"project-create-conflict-{suffix}"}
+    first_payload = {
+        "tenant_id": encode_id(tenant.id),
+        "name": "Conflict Project",
+        "slug": f"idem-conf-{suffix}",
+        "description": "first create",
+    }
+    second_payload = {
+        "tenant_id": encode_id(tenant.id),
+        "name": "Conflict Project Renamed",
+        "slug": f"idem-conf-other-{suffix}",
+        "description": "changed payload",
+    }
+    first = await client.post("/api/v1/projects", headers=key_headers, json=first_payload)
+    assert first.status_code == 201, first.text
+    second = await client.post("/api/v1/projects", headers=key_headers, json=second_payload)
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"]["code"] == "idempotency_key_payload_conflict"
+
+
+@pytest.mark.asyncio
+async def test_binding_status_idempotency_replays_duplicate_submit(client, db_session):
+    owner_headers, _, _, environment_id = await _setup_project_environment(client, db_session)
+    list_response = await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)
+    assert list_response.status_code == 200, list_response.text
+    binding_id = list_response.json()[0]["id"]
+    idem_headers = {**owner_headers, "Idempotency-Key": f"binding-status-{uuid4().hex[:8]}"}
+    payload = {"status": "deprecated", "reason": "planned transition"}
+
+    first = await client.post(f"/api/v1/bindings/{binding_id}/status", headers=idem_headers, json=payload)
+    assert first.status_code == 200, first.text
+    second = await client.post(f"/api/v1/bindings/{binding_id}/status", headers=idem_headers, json=payload)
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["status"] == first.json()["status"]
