@@ -45,7 +45,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const { data: overview } = overviewQuery;
   const { data: usage } = usePostBaseUsage(projectId);
 
-  const primaryEnvironment = environments?.[0];
+  const primaryEnvironment = environments?.items?.[0];
   const healthQuery = usePostBaseCapabilityHealth(primaryEnvironment?.id);
   const { data: health } = healthQuery;
   const { data: bindings } = usePostBaseBindings(primaryEnvironment?.id);
@@ -59,17 +59,22 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const [runningActions, setRunningActions] = useState<Record<string, boolean>>({});
   const [latestOperationSummary, setLatestOperationSummary] = useState<string | null>(null);
 
+  const usageItems = usage?.items ?? [];
+  const migrationItems = migrations?.items ?? [];
+  const bindingItems = bindings?.items ?? [];
+  const secretItems = secrets?.items ?? [];
+
   const usageByCapability = useMemo(() => {
     const buckets = new Map<string, number>();
-    for (const meter of usage ?? []) {
+    for (const meter of usageItems) {
       buckets.set(meter.capability_key, (buckets.get(meter.capability_key) ?? 0) + meter.value);
     }
     return [...buckets.entries()].sort((a, b) => b[1] - a[1]);
-  }, [usage]);
+  }, [usageItems]);
 
-  const pendingMigrations = (migrations ?? []).filter((item) => item.status === 'pending');
-  const failedMigrations = (migrations ?? []).filter((item) => item.status === 'failed');
-  const needsReconciliation = (migrations ?? []).filter((item) => item.reconciliation_status !== 'in_sync');
+  const pendingMigrations = migrationItems.filter((item) => item.status === 'pending');
+  const failedMigrations = migrationItems.filter((item) => item.status === 'failed');
+  const needsReconciliation = migrationItems.filter((item) => item.reconciliation_status !== 'in_sync');
 
   const runAction = async (actionKey: string, action: () => Promise<void>) => {
     if (runningActions[actionKey]) {
@@ -244,7 +249,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
             drainError={drainWebhooks.error}
             recoverError={recoverWebhooks.error}
             reconcileError={reconcileMigration.error}
-            lastPolledAt={migrations?.[0]?.last_reconciled_at ?? null}
+            lastPolledAt={migrationItems[0]?.last_reconciled_at ?? null}
           />
           <MutationError mutationError={drainWebhooks.error} />
           <MutationError mutationError={recoverWebhooks.error} />
@@ -286,12 +291,12 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <SecretForm environmentId={primaryEnvironment?.id} secrets={secrets ?? []} />
+        <SecretForm environmentId={primaryEnvironment?.id} secrets={secretItems} />
         <BindingForm
           environmentId={primaryEnvironment?.id}
           providerCatalog={providerCatalog ?? []}
-          bindings={bindings ?? []}
-          secrets={secrets?.map((item) => item.id) ?? []}
+          bindings={bindingItems}
+          secrets={secretItems.map((item) => item.id)}
         />
       </div>
 
@@ -383,7 +388,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           <CardTitle>Switchovers (execute / rollback)</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
-          {(bindings ?? []).map((binding) => (
+          {bindingItems.map((binding) => (
             <BindingSwitchoverRow key={binding.id} bindingId={binding.id} capability={binding.capability_key} currentProvider={binding.provider_key} />
           ))}
         </CardContent>
@@ -837,7 +842,7 @@ function BindingSwitchoverRow({
   const createSwitchover = useCreatePostBaseSwitchover(bindingId);
   const executeSwitchover = useExecutePostBaseSwitchover(bindingId);
   const { data } = usePostBaseBindingSwitchovers(bindingId);
-  const pending = (data ?? []).find((item) => item.status === 'pending' || item.status === 'failed');
+  const pending = (data?.items ?? []).find((item) => item.status === 'pending' || item.status === 'failed');
   const preflight = pending?.execution_state_json?.preflight_report as Record<string, { ok?: boolean; detail?: string }> | undefined;
   const preflightBlocked = Boolean(preflight && Object.values(preflight).some((result) => result.ok === false));
 
