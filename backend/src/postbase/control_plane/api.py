@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -8,7 +9,7 @@ from src.apps.core.schemas import PaginatedResponse
 from src.apps.iam.api.deps import get_current_user, get_db
 from src.apps.iam.models.user import User
 from src.apps.iam.utils.hashid import decode_id_or_404, encode_id
-from src.apps.multitenancy.models.tenant import TenantRole
+from src.apps.multitenancy.models.tenant import TenantMember, TenantRole
 from src.postbase.control_plane.schemas import (
     AuditLogRead,
     BindingCreate,
@@ -91,6 +92,8 @@ from src.postbase.providers.data.postgres_native import PostgresNativeDataProvid
 from src.postbase.tasks import drain_due_webhook_jobs
 
 router = APIRouter(tags=["postbase-control-plane"])
+DEFAULT_PAGE_LIMIT = 25
+MAX_PAGE_LIMIT = 100
 MUTATION_MIN_ROLE = TenantRole.ADMIN
 CONTROL_PLANE_MUTATION_MIN_ROLES: dict[str, TenantRole] = {
     "bindings": TenantRole.ADMIN,
@@ -104,6 +107,14 @@ CONTROL_PLANE_MUTATION_MIN_ROLES: dict[str, TenantRole] = {
     "tables": TenantRole.ADMIN,
     "environment_lifecycle": TenantRole.ADMIN,
 }
+
+
+def _allowed_roles(min_role: TenantRole) -> tuple[TenantRole, ...]:
+    if min_role == TenantRole.OWNER:
+        return (TenantRole.OWNER,)
+    if min_role == TenantRole.ADMIN:
+        return (TenantRole.OWNER, TenantRole.ADMIN)
+    return (TenantRole.OWNER, TenantRole.ADMIN, TenantRole.MEMBER)
 
 
 async def _load_environment_or_404(db: AsyncSession, environment_id: str) -> Environment:
@@ -270,22 +281,30 @@ async def update_project_lifecycle(
 
 @router.get("/projects", response_model=PaginatedResponse[ProjectRead])
 async def list_projects(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> PaginatedResponse[ProjectRead]:
-    rows = (await db.execute(select(Project))).scalars().all()
-    visible: list[Project] = []
-    for project in rows:
-        try:
-            await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.MEMBER)
-        except HTTPException:
-            continue
-        visible.append(project)
+    membership_predicate = (
+        (TenantMember.user_id == current_user.id)
+        & (TenantMember.is_active == True)
+        & (TenantMember.role.in_(_allowed_roles(TenantRole.MEMBER)))
+    )
+    base_stmt = select(Project).join(TenantMember, (TenantMember.tenant_id == Project.tenant_id) & membership_predicate)
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(Project)
+            .join(TenantMember, (TenantMember.tenant_id == Project.tenant_id) & membership_predicate)
+        )
+    ).scalar_one()
+    rows = (await db.execute(base_stmt.order_by(Project.id.desc()).offset(skip).limit(limit))).scalars().all()
     return PaginatedResponse[ProjectRead].create(
-        items=[ProjectRead.model_validate(item) for item in visible],
-        total=len(visible),
-        skip=0,
-        limit=len(visible) or 1,
+        items=[ProjectRead.model_validate(item) for item in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
     )
 
 
@@ -311,21 +330,37 @@ async def create_environment(
     )
 
 
-@router.get("/projects/{project_id}/environments", response_model=list[EnvironmentRead])
+@router.get("/projects/{project_id}/environments", response_model=PaginatedResponse[EnvironmentRead])
 async def list_environments(
     project_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[Environment]:
+) -> PaginatedResponse[EnvironmentRead]:
     project_db_id = decode_id_or_404(project_id)
     project = await db.get(Project, project_db_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.MEMBER)
+    total = (
+        await db.execute(select(func.count()).select_from(Environment).where(Environment.project_id == project.id))
+    ).scalar_one()
     rows = (
-        await db.execute(select(Environment).where(Environment.project_id == project.id))
+        await db.execute(
+            select(Environment)
+            .where(Environment.project_id == project.id)
+            .order_by(Environment.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
     ).scalars().all()
-    return rows
+    return PaginatedResponse[EnvironmentRead].create(
+        items=[EnvironmentRead.model_validate(item) for item in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.post("/environments/{environment_id}/lifecycle", response_model=EnvironmentRead)
@@ -353,17 +388,26 @@ async def update_environment_lifecycle(
     )
 
 
-@router.get("/environments/{environment_id}/bindings", response_model=list[BindingRead])
+@router.get("/environments/{environment_id}/bindings", response_model=PaginatedResponse[BindingRead])
 async def list_bindings(
     environment_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[BindingRead]:
+) -> PaginatedResponse[BindingRead]:
     environment_db_id = decode_id_or_404(environment_id)
     environment = await db.get(Environment, environment_db_id)
     if environment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
     await ensure_environment_access(db, environment=environment, user_id=current_user.id, min_role=TenantRole.MEMBER)
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(CapabilityBinding)
+            .where(CapabilityBinding.environment_id == environment.id)
+        )
+    ).scalar_one()
     rows = (
         await db.execute(
             select(CapabilityBinding, CapabilityType, ProviderCatalogEntry)
@@ -373,12 +417,15 @@ async def list_bindings(
                 CapabilityBinding.provider_catalog_entry_id == ProviderCatalogEntry.id,
             )
             .where(CapabilityBinding.environment_id == environment.id)
+            .order_by(CapabilityBinding.id.desc())
+            .offset(skip)
+            .limit(limit)
         )
     ).all()
     response: list[BindingRead] = []
     for binding, capability, provider in rows:
         response.append(await _to_binding_read(db, binding, capability, provider))
-    return response
+    return PaginatedResponse[BindingRead].create(items=response, total=total, skip=skip, limit=limit)
 
 
 @router.post("/environments/{environment_id}/bindings", response_model=BindingRead)
@@ -472,12 +519,14 @@ async def execute_switchover(
     )
 
 
-@router.get("/bindings/{binding_id}/switchovers", response_model=list[SwitchoverRead])
+@router.get("/bindings/{binding_id}/switchovers", response_model=PaginatedResponse[SwitchoverRead])
 async def list_binding_switchovers(
     binding_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[SwitchoverPlan]:
+) -> PaginatedResponse[SwitchoverRead]:
     binding_db_id = decode_id_or_404(binding_id)
     binding = await db.get(CapabilityBinding, binding_db_id)
     if binding is None:
@@ -491,13 +540,28 @@ async def list_binding_switchovers(
         user_id=current_user.id,
         min_role=TenantRole.ADMIN,
     )
-    return (
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(SwitchoverPlan)
+            .where(SwitchoverPlan.capability_binding_id == binding.id)
+        )
+    ).scalar_one()
+    rows = (
         await db.execute(
             select(SwitchoverPlan)
             .where(SwitchoverPlan.capability_binding_id == binding.id)
             .order_by(SwitchoverPlan.created_at.desc())
+            .offset(skip)
+            .limit(limit)
         )
     ).scalars().all()
+    return PaginatedResponse[SwitchoverRead].create(
+        items=[SwitchoverRead.model_validate(item) for item in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get("/switchovers/{switchover_id}", response_model=SwitchoverRead)
@@ -644,20 +708,37 @@ async def revoke_environment_key(
     await db.commit()
 
 
-@router.get("/environments/{environment_id}/secrets", response_model=list[SecretRefRead])
+@router.get("/environments/{environment_id}/secrets", response_model=PaginatedResponse[SecretRefRead])
 async def list_environment_secrets(
     environment_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[SecretRef]:
+) -> PaginatedResponse[SecretRefRead]:
     environment_db_id = decode_id_or_404(environment_id)
     environment = await db.get(Environment, environment_db_id)
     if environment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
     await ensure_environment_access(db, environment=environment, user_id=current_user.id, min_role=TenantRole.ADMIN)
-    return (
-        await db.execute(select(SecretRef).where(SecretRef.environment_id == environment.id))
+    total = (
+        await db.execute(select(func.count()).select_from(SecretRef).where(SecretRef.environment_id == environment.id))
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            select(SecretRef)
+            .where(SecretRef.environment_id == environment.id)
+            .order_by(SecretRef.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
     ).scalars().all()
+    return PaginatedResponse[SecretRefRead].create(
+        items=[SecretRefRead.model_validate(item) for item in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.post("/environments/{environment_id}/secrets", response_model=SecretRefRead, status_code=status.HTTP_201_CREATED)
@@ -754,22 +835,35 @@ async def revoke_environment_secret(
     )
 
 
-@router.get("/projects/{project_id}/audit", response_model=list[AuditLogRead])
+@router.get("/projects/{project_id}/audit", response_model=PaginatedResponse[AuditLogRead])
 async def list_project_audit_logs(
     project_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[AuditLog]:
+) -> PaginatedResponse[AuditLogRead]:
     project_db_id = decode_id_or_404(project_id)
     project = await db.get(Project, project_db_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.ADMIN)
-    return (
+    total = (
+        await db.execute(select(func.count()).select_from(AuditLog).where(AuditLog.project_id == project.id))
+    ).scalar_one()
+    rows = (
         await db.execute(
             select(AuditLog).where(AuditLog.project_id == project.id).order_by(AuditLog.created_at.desc())
+            .offset(skip)
+            .limit(limit)
         )
     ).scalars().all()
+    return PaginatedResponse[AuditLogRead].create(
+        items=[AuditLogRead.model_validate(item) for item in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get("/environments/{environment_id}/reports/capability-health", response_model=CapabilityHealthReport)
@@ -805,18 +899,28 @@ async def get_capability_health_report(
     )
 
 
-@router.get("/projects/{project_id}/usage", response_model=list[UsageMeterRead])
+@router.get("/projects/{project_id}/usage", response_model=PaginatedResponse[UsageMeterRead])
 async def get_project_usage(
     project_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[UsageMeter]:
+) -> PaginatedResponse[UsageMeterRead]:
     project_db_id = decode_id_or_404(project_id)
     project = await db.get(Project, project_db_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.ADMIN)
-    return await get_project_usage_meters(db, project=project)
+    rows = await get_project_usage_meters(db, project=project)
+    total = len(rows)
+    paged_rows = rows[skip : skip + limit]
+    return PaginatedResponse[UsageMeterRead].create(
+        items=[UsageMeterRead.model_validate(item) for item in paged_rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get("/projects/{project_id}/overview", response_model=ProjectOverviewRead)
@@ -1000,12 +1104,14 @@ async def _to_migration_read(db: AsyncSession, migration: SchemaMigration) -> Mi
         created_at=refreshed.created_at,
     )
 
-@router.get("/environments/{environment_id}/migrations", response_model=list[MigrationRead])
+@router.get("/environments/{environment_id}/migrations", response_model=PaginatedResponse[MigrationRead])
 async def list_environment_migrations(
     environment_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[MigrationRead]:
+) -> PaginatedResponse[MigrationRead]:
     environment_db_id = decode_id_or_404(environment_id)
     environment = await db.get(Environment, environment_db_id)
     if environment is None:
@@ -1016,16 +1122,23 @@ async def list_environment_migrations(
         user_id=current_user.id,
         min_role=TenantRole.ADMIN,
     )
+    total = (
+        await db.execute(
+            select(func.count()).select_from(SchemaMigration).where(SchemaMigration.environment_id == environment.id)
+        )
+    ).scalar_one()
     rows = (
         await db.execute(
             select(SchemaMigration)
             .where(SchemaMigration.environment_id == environment.id)
             .order_by(SchemaMigration.id.desc())
+            .offset(skip)
+            .limit(limit)
         )
     ).scalars().all()
     response = [await _to_migration_read(db, row) for row in rows]
     await db.commit()
-    return response
+    return PaginatedResponse[MigrationRead].create(items=response, total=total, skip=skip, limit=limit)
 
 
 @router.post(
