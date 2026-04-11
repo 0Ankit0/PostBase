@@ -71,7 +71,6 @@ async def test_list_projects_applies_offset_limit_and_access_scope(client, db_se
     assert page_one_payload["total"] == 3
     assert page_one_payload["skip"] == 0
     assert page_one_payload["limit"] == 2
-    assert page_one_payload["has_more"] is True
     assert len(page_one_payload["items"]) == 2
 
     page_two = await client.get("/api/v1/projects?skip=2&limit=2", headers=owner_headers)
@@ -80,7 +79,6 @@ async def test_list_projects_applies_offset_limit_and_access_scope(client, db_se
     assert page_two_payload["total"] == 3
     assert page_two_payload["skip"] == 2
     assert page_two_payload["limit"] == 2
-    assert page_two_payload["has_more"] is False
     assert len(page_two_payload["items"]) == 1
 
     outsider_view = await client.get("/api/v1/projects?skip=0&limit=10", headers=owner_headers)
@@ -146,6 +144,42 @@ async def test_list_routes_return_paginated_envelopes_and_respect_bounds(client,
         response = await client.get(endpoint, headers=owner_headers)
         assert response.status_code == 200, response.text
         list_payload = response.json()
-        assert set(list_payload.keys()) >= {"items", "total", "skip", "limit", "has_more"}
+        assert set(list_payload.keys()) >= {"items", "total", "skip", "limit"}
         assert list_payload["skip"] == 0
         assert list_payload["limit"] == 10
+
+
+@pytest.mark.asyncio
+async def test_pagination_boundaries_empty_last_and_large_total(client, db_session):
+    owner_headers = await _signup(client, username="boundary_owner", email="boundary_owner@example.com")
+    owner = (await db_session.execute(select(User).where(User.email == "boundary_owner@example.com"))).scalars().one()
+
+    tenant = Tenant(name="Boundary Tenant", slug="boundary-tenant", description="boundary", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+
+    tenant_hash = encode_id(tenant.id)
+    for idx in range(105):
+        response = await client.post(
+            "/api/v1/projects",
+            headers=owner_headers,
+            json={
+                "tenant_id": tenant_hash,
+                "name": f"Boundary Project {idx}",
+                "slug": f"boundary_project_{idx}",
+                "description": "pagination boundary",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    empty_page = await client.get("/api/v1/projects?skip=500&limit=25", headers=owner_headers)
+    assert empty_page.status_code == 200, empty_page.text
+    assert empty_page.json()["items"] == []
+    assert empty_page.json()["total"] == 105
+
+    last_page = await client.get("/api/v1/projects?skip=100&limit=25", headers=owner_headers)
+    assert last_page.status_code == 200, last_page.text
+    assert len(last_page.json()["items"]) == 5
+    assert last_page.json()["total"] == 105

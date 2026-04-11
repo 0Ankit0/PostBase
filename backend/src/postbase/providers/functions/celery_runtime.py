@@ -5,9 +5,11 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 from sqlmodel import select
 
 from src.apps.core.config import settings
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.functions.contracts import (
     ExecutionRead,
     FunctionCreateRequest,
@@ -71,11 +73,20 @@ class CeleryRuntimeFunctionsProvider:
         await db.commit()
         return self._function_read(row)
 
-    async def list_functions(self, context) -> list[FunctionRead]:
+    async def list_functions(self, context, *, skip: int, limit: int) -> PaginatedResponse[FunctionRead]:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
+        total = (
+            await db.execute(
+                select(func.count()).select_from(FunctionDefinition).where(FunctionDefinition.environment_id == context.environment_id)
+            )
+        ).scalar_one()
         rows = (
             await db.execute(
-                select(FunctionDefinition).where(FunctionDefinition.environment_id == context.environment_id)
+                select(FunctionDefinition)
+                .where(FunctionDefinition.environment_id == context.environment_id)
+                .order_by(FunctionDefinition.id.desc())
+                .offset(skip)
+                .limit(limit)
             )
         ).scalars().all()
         await record_usage(
@@ -84,7 +95,12 @@ class CeleryRuntimeFunctionsProvider:
             capability_key=CapabilityKey.FUNCTIONS.value,
             metric_key="list_functions",
         )
-        return [self._function_read(item) for item in rows]
+        return PaginatedResponse[FunctionRead].create(
+            items=[self._function_read(item) for item in rows],
+            total=total,
+            skip=skip,
+            limit=limit,
+        )
 
     async def invoke(
         self,
@@ -223,14 +239,27 @@ class CeleryRuntimeFunctionsProvider:
         await db.commit()
         return self._execution_read(execution)
 
-    async def list_executions(self, context, function_id: int) -> list[ExecutionRead]:
+    async def list_executions(self, context, function_id: int, *, skip: int, limit: int) -> PaginatedResponse[ExecutionRead]:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
+        total = (
+            await db.execute(
+                select(func.count())
+                .select_from(ExecutionRecord)
+                .where(
+                    ExecutionRecord.environment_id == context.environment_id,
+                    ExecutionRecord.function_definition_id == function_id,
+                )
+            )
+        ).scalar_one()
         rows = (
             await db.execute(
                 select(ExecutionRecord).where(
                     ExecutionRecord.environment_id == context.environment_id,
                     ExecutionRecord.function_definition_id == function_id,
                 )
+                .order_by(ExecutionRecord.id.desc())
+                .offset(skip)
+                .limit(limit)
             )
         ).scalars().all()
         await record_usage(
@@ -239,7 +268,12 @@ class CeleryRuntimeFunctionsProvider:
             capability_key=CapabilityKey.FUNCTIONS.value,
             metric_key="list_executions",
         )
-        return [self._execution_read(item) for item in rows]
+        return PaginatedResponse[ExecutionRead].create(
+            items=[self._execution_read(item) for item in rows],
+            total=total,
+            skip=skip,
+            limit=limit,
+        )
 
     def _execute_handler(
         self,

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Any
 
+from fastapi import APIRouter, Depends, Query
+
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.contracts import FacadeStatusResponse
 from src.postbase.capabilities.data.contracts import DataMutationPayload, DataMutationResult, DataQueryRequest, DataQueryResult
 from src.postbase.capabilities.data.dependencies import get_access_context, get_data_facade, get_data_provider
@@ -19,14 +22,16 @@ async def query_rows(
     return await provider.query_rows(context, payload)
 
 
-@router.get("/{namespace}/{table}", response_model=DataQueryResult)
+@router.get("/{namespace}/{table}", response_model=PaginatedResponse[dict[str, Any]])
 async def list_rows(
     namespace: str,
     table: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=25, ge=1, le=100),
     context=Depends(get_access_context),
     provider=Depends(get_data_provider),
-) -> DataQueryResult:
-    return await provider.list_rows(context, namespace, table)
+) -> PaginatedResponse[dict[str, Any]]:
+    return await provider.list_rows(context, namespace, table, skip=skip, limit=limit)
 
 
 @router.post("/{namespace}/{table}", response_model=DataMutationResult)

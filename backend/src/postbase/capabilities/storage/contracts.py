@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.platform.contracts import ProviderAdapter
 
 
@@ -36,7 +37,14 @@ class StorageProvider(ProviderAdapter, Protocol):
     async def upload_file(self, context, payload: StorageUploadRequest) -> StorageFileResponse:
         ...
 
-    async def list_files(self, context, bucket_key: str | None = None) -> list[StorageFileResponse]:
+    async def list_files(
+        self,
+        context,
+        bucket_key: str | None = None,
+        *,
+        skip: int,
+        limit: int,
+    ) -> PaginatedResponse[StorageFileResponse]:
         ...
 
     async def signed_url(self, context, file_id: int) -> SignedUrlResponse:

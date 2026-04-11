@@ -4,8 +4,10 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 from sqlmodel import select
 
+from src.apps.core.schemas import PaginatedResponse
 from src.apps.core.config import settings
 from src.apps.websocket.manager import manager as ws_manager
 from src.postbase.capabilities.events.contracts import (
@@ -69,10 +71,21 @@ class WebsocketGatewayEventsProvider:
         await db.commit()
         return ChannelRead(id=row.id, channel_key=row.channel_key, description=row.description)
 
-    async def list_channels(self, context) -> list[ChannelRead]:
+    async def list_channels(self, context, *, skip: int, limit: int) -> PaginatedResponse[ChannelRead]:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
+        total = (
+            await db.execute(
+                select(func.count()).select_from(EventChannel).where(EventChannel.environment_id == context.environment_id)
+            )
+        ).scalar_one()
         rows = (
-            await db.execute(select(EventChannel).where(EventChannel.environment_id == context.environment_id))
+            await db.execute(
+                select(EventChannel)
+                .where(EventChannel.environment_id == context.environment_id)
+                .order_by(EventChannel.id.desc())
+                .offset(skip)
+                .limit(limit)
+            )
         ).scalars().all()
         await record_usage(
             db,
@@ -80,7 +93,12 @@ class WebsocketGatewayEventsProvider:
             capability_key=CapabilityKey.EVENTS.value,
             metric_key="list_channels",
         )
-        return [ChannelRead(id=row.id, channel_key=row.channel_key, description=row.description) for row in rows]
+        return PaginatedResponse[ChannelRead].create(
+            items=[ChannelRead(id=row.id, channel_key=row.channel_key, description=row.description) for row in rows],
+            total=total,
+            skip=skip,
+            limit=limit,
+        )
 
     async def create_subscription(self, context, channel_id: int, payload: SubscriptionCreateRequest) -> SubscriptionRead:
         db: AsyncSession = context.db  # type: ignore[attr-defined]

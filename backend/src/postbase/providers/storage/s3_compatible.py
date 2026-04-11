@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 
 from fastapi import HTTPException, status
+from sqlalchemy import func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.apps.core.config import settings
 from src.apps.core.storage import delete_media, save_media_bytes
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.storage.contracts import SignedUrlResponse, StorageFileResponse, StorageUploadRequest
 from src.postbase.domain.enums import CapabilityKey
 from src.postbase.domain.models import FileObject
@@ -62,20 +64,38 @@ class S3CompatibleStorageProvider:
         await db.commit()
         return self._to_response(file_object)
 
-    async def list_files(self, context, bucket_key: str | None = None) -> list[StorageFileResponse]:
+    async def list_files(
+        self,
+        context,
+        bucket_key: str | None = None,
+        *,
+        skip: int,
+        limit: int,
+    ) -> PaginatedResponse[StorageFileResponse]:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         query = select(FileObject).where(FileObject.environment_id == context.environment_id)
+        count_query = select(func.count()).select_from(FileObject).where(FileObject.environment_id == context.environment_id)
         if bucket_key:
             query = query.where(FileObject.bucket_key == bucket_key)
-        rows = (await db.execute(query)).scalars().all()
-        visible = [row for row in rows if self._can_access(context, row)]
+            count_query = count_query.where(FileObject.bucket_key == bucket_key)
+        if not context.service_role:
+            visibility_predicate = or_(FileObject.owner_auth_user_id == None, FileObject.owner_auth_user_id == context.auth_user_id)
+            query = query.where(visibility_predicate)
+            count_query = count_query.where(visibility_predicate)
+        total = (await db.execute(count_query)).scalar_one()
+        rows = (await db.execute(query.order_by(FileObject.id.desc()).offset(skip).limit(limit))).scalars().all()
         await record_usage(
             db,
             environment_id=context.environment_id,
             capability_key=CapabilityKey.STORAGE.value,
             metric_key="list_files",
         )
-        return [self._to_response(item) for item in visible]
+        return PaginatedResponse[StorageFileResponse].create(
+            items=[self._to_response(item) for item in rows],
+            total=total,
+            skip=skip,
+            limit=limit,
+        )
 
     async def signed_url(self, context, file_id: int) -> SignedUrlResponse:
         db: AsyncSession = context.db  # type: ignore[attr-defined]

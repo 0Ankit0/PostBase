@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.platform.contracts import ProviderAdapter
 
 
@@ -57,7 +58,7 @@ class FunctionsProvider(ProviderAdapter, Protocol):
     async def create_function(self, context, payload: FunctionCreateRequest) -> FunctionRead:
         ...
 
-    async def list_functions(self, context) -> list[FunctionRead]:
+    async def list_functions(self, context, *, skip: int, limit: int) -> PaginatedResponse[FunctionRead]:
         ...
 
     async def invoke(
@@ -71,5 +72,12 @@ class FunctionsProvider(ProviderAdapter, Protocol):
     ) -> ExecutionRead:
         ...
 
-    async def list_executions(self, context, function_id: int) -> list[ExecutionRead]:
+    async def list_executions(
+        self,
+        context,
+        function_id: int,
+        *,
+        skip: int,
+        limit: int,
+    ) -> PaginatedResponse[ExecutionRead]:
         ...

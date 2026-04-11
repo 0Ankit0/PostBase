@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.contracts import FacadeStatusResponse
 from src.postbase.capabilities.events.contracts import (
     ChannelCreateRequest,
@@ -25,12 +26,14 @@ async def create_channel(
     return await provider.create_channel(context, payload)
 
 
-@router.get("/channels", response_model=list[ChannelRead])
+@router.get("/channels", response_model=PaginatedResponse[ChannelRead])
 async def list_channels(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=25, ge=1, le=100),
     context=Depends(get_access_context),
     provider=Depends(get_events_provider),
-) -> list[ChannelRead]:
-    return await provider.list_channels(context)
+) -> PaginatedResponse[ChannelRead]:
+    return await provider.list_channels(context, skip=skip, limit=limit)
 
 
 @router.post("/subscriptions/{channel_id}", response_model=SubscriptionRead)

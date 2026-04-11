@@ -144,7 +144,7 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
 
     list_files_response = await client.get("/api/v1/storage/files", headers=user_headers)
     assert list_files_response.status_code == 200, list_files_response.text
-    assert len(list_files_response.json()) == 1
+    assert len(list_files_response.json()["items"]) == 1
 
     signed_url_response = await client.get(
         f"/api/v1/storage/files/{file_id}/signed-url",
@@ -194,7 +194,7 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
         headers=user_headers,
     )
     assert executions_response.status_code == 200, executions_response.text
-    assert len(executions_response.json()) >= 3
+    assert len(executions_response.json()["items"]) >= 3
 
     channel_response = await client.post(
         "/api/v1/events/channels",
