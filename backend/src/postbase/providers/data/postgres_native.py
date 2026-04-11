@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.data.contracts import DataMutationPayload, DataMutationResult, DataQueryRequest, DataQueryResult
 from src.postbase.domain.enums import CapabilityKey, PolicyMode
 from src.postbase.domain.models import DataNamespace, TableDefinition
@@ -79,12 +80,28 @@ class PostgresNativeDataProvider:
         )
         return DataQueryResult(rows=[dict(row) for row in result.mappings().all()])
 
-    async def list_rows(self, context: PostBaseAccessContext, namespace: str, table: str) -> DataQueryResult:
+    async def list_rows(
+        self,
+        context: PostBaseAccessContext,
+        namespace: str,
+        table: str,
+        *,
+        skip: int,
+        limit: int,
+    ) -> PaginatedResponse[dict[str, Any]]:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         namespace_row, table_row = await self._resolve_table(db, context, namespace, table)
-        sql = f"SELECT * FROM {self._qualified_table(db, namespace_row.physical_schema, table_row.table_name)}"
+        bounded_limit = min(max(limit, 1), 500)
+        bounded_skip = max(skip, 0)
+        from_sql = f"FROM {self._qualified_table(db, namespace_row.physical_schema, table_row.table_name)}"
+        sql = f"SELECT * {from_sql}"
         params: dict[str, Any] = {}
         sql = self._apply_policy_read(context, table_row, sql, params)
+        count_sql = self._apply_policy_read(context, table_row, f"SELECT COUNT(*) {from_sql}", dict(params))
+        total = int((await db.execute(text(count_sql), params)).scalar_one())
+        sql += " LIMIT :limit OFFSET :offset"
+        params["limit"] = bounded_limit
+        params["offset"] = bounded_skip
         result = await db.execute(text(sql), params)
         await record_usage(
             db,
@@ -92,7 +109,12 @@ class PostgresNativeDataProvider:
             capability_key=CapabilityKey.DATA.value,
             metric_key="list_rows",
         )
-        return DataQueryResult(rows=[dict(row) for row in result.mappings().all()])
+        return PaginatedResponse[dict[str, Any]].create(
+            items=[dict(row) for row in result.mappings().all()],
+            total=total,
+            skip=bounded_skip,
+            limit=bounded_limit,
+        )
 
     async def create_row(
         self,

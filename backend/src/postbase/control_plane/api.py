@@ -63,7 +63,6 @@ from src.postbase.control_plane.service import (
     execute_migration_reconciliation,
     ensure_environment_access,
     refresh_migration_reconciliation_state,
-    get_project_usage_meters,
     require_project_access,
     revoke_secret_ref,
     rotate_secret_ref,
@@ -221,17 +220,27 @@ async def _to_binding_read(
     )
 
 
-@router.get("/provider-catalog", response_model=list[ProviderCatalogRead])
+@router.get("/provider-catalog", response_model=PaginatedResponse[ProviderCatalogRead])
 async def list_provider_catalog(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[ProviderCatalogRead]:
+) -> PaginatedResponse[ProviderCatalogRead]:
     await seed_provider_catalog(db)
+    total = (await db.execute(select(func.count()).select_from(ProviderCatalogEntry))).scalar_one()
     rows = (
-        await db.execute(select(ProviderCatalogEntry, CapabilityType).join(CapabilityType))
+        await db.execute(
+            select(ProviderCatalogEntry, CapabilityType)
+            .join(CapabilityType)
+            .order_by(ProviderCatalogEntry.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
     ).all()
     _ = current_user  # authenticated access only
-    return [
+    return PaginatedResponse[ProviderCatalogRead].create(
+        items=[
         ProviderCatalogRead(
             id=entry.id,
             capability_key=capability.key,
@@ -241,7 +250,11 @@ async def list_provider_catalog(
             metadata_json=entry.metadata_json,
         )
         for entry, capability in rows
-    ]
+    ],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -618,22 +631,39 @@ async def update_binding_status(
     return await _to_binding_read(db, binding, capability, provider)
 
 
-@router.get("/environments/{environment_id}/keys", response_model=list[EnvironmentApiKeyRead])
+@router.get("/environments/{environment_id}/keys", response_model=PaginatedResponse[EnvironmentApiKeyRead])
 async def list_environment_keys(
     environment_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[EnvironmentApiKey]:
+) -> PaginatedResponse[EnvironmentApiKeyRead]:
     environment_db_id = decode_id_or_404(environment_id)
     environment = await db.get(Environment, environment_db_id)
     if environment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
     await ensure_environment_access(db, environment=environment, user_id=current_user.id, min_role=TenantRole.ADMIN)
-    return (
+    total = (
         await db.execute(
-            select(EnvironmentApiKey).where(EnvironmentApiKey.environment_id == environment.id)
+            select(func.count()).select_from(EnvironmentApiKey).where(EnvironmentApiKey.environment_id == environment.id)
+        )
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            select(EnvironmentApiKey)
+            .where(EnvironmentApiKey.environment_id == environment.id)
+            .order_by(EnvironmentApiKey.id.desc())
+            .offset(skip)
+            .limit(limit)
         )
     ).scalars().all()
+    return PaginatedResponse[EnvironmentApiKeyRead].create(
+        items=[EnvironmentApiKeyRead.model_validate(row) for row in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.post("/environments/{environment_id}/keys", response_model=EnvironmentApiKeyIssued)
@@ -912,11 +942,27 @@ async def get_project_usage(
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.ADMIN)
-    rows = await get_project_usage_meters(db, project=project)
-    total = len(rows)
-    paged_rows = rows[skip : skip + limit]
+    environment_ids = (
+        await db.execute(select(Environment.id).where(Environment.project_id == project.id))
+    ).scalars().all()
+    if not environment_ids:
+        return PaginatedResponse[UsageMeterRead].create(items=[], total=0, skip=skip, limit=limit)
+    total = (
+        await db.execute(
+            select(func.count()).select_from(UsageMeter).where(UsageMeter.environment_id.in_(environment_ids))
+        )
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            select(UsageMeter)
+            .where(UsageMeter.environment_id.in_(environment_ids))
+            .order_by(UsageMeter.capability_key.asc(), UsageMeter.metric_key.asc())
+            .offset(skip)
+            .limit(limit)
+        )
+    ).scalars().all()
     return PaginatedResponse[UsageMeterRead].create(
-        items=[UsageMeterRead.model_validate(item) for item in paged_rows],
+        items=[UsageMeterRead.model_validate(item) for item in rows],
         total=total,
         skip=skip,
         limit=limit,

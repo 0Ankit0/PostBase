@@ -51,7 +51,6 @@ function updatePaginatedItems<T>(
   return {
     ...payload,
     items,
-    has_more: (payload.skip + items.length) < payload.total,
   };
 }
 
@@ -61,7 +60,7 @@ export function usePostBaseProviderCatalog() {
   return useQuery({
     queryKey: ['postbase', tenantId, 'provider-catalog'],
     queryFn: async () => {
-      const response = await apiClient.get<PostBaseProviderCatalogRead[]>('/provider-catalog');
+      const response = await apiClient.get<PaginatedResponse<PostBaseProviderCatalogRead>>('/provider-catalog');
       return response.data;
     },
     staleTime: 60_000,
@@ -377,7 +376,7 @@ export function useCreatePostBaseSecret(environmentId: string | undefined) {
         ['postbase', tenantId, 'environments', environmentId, 'secrets', 0, 25],
         (current) =>
           current
-            ? { ...current, items: [secret, ...current.items], total: current.total + 1, has_more: (current.skip + current.items.length + 1) < current.total + 1 }
+            ? { ...current, items: [secret, ...current.items], total: current.total + 1 }
             : current,
       );
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
@@ -464,7 +463,7 @@ export function useCreatePostBaseBinding(environmentId: string | undefined) {
         ['postbase', tenantId, 'environments', environmentId, 'bindings', 0, 25],
         (current) =>
           current
-            ? { ...current, items: [binding, ...current.items], total: current.total + 1, has_more: (current.skip + current.items.length + 1) < current.total + 1 }
+            ? { ...current, items: [binding, ...current.items], total: current.total + 1 }
             : current,
       );
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
@@ -521,7 +520,7 @@ export function useCreatePostBaseSwitchover(bindingId: string | undefined) {
         ['postbase', tenantId, 'bindings', bindingId, 'switchovers', 0, 25],
         (current) =>
           current
-            ? { ...current, items: [switchover, ...current.items], total: current.total + 1, has_more: (current.skip + current.items.length + 1) < current.total + 1 }
+            ? { ...current, items: [switchover, ...current.items], total: current.total + 1 }
             : current,
       );
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId] });

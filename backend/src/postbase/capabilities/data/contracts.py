@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.platform.contracts import ProviderAdapter
 
 
@@ -35,7 +36,15 @@ class DataProvider(ProviderAdapter, Protocol):
     async def query_rows(self, context, payload: DataQueryRequest) -> DataQueryResult:
         ...
 
-    async def list_rows(self, context, namespace: str, table: str) -> DataQueryResult:
+    async def list_rows(
+        self,
+        context,
+        namespace: str,
+        table: str,
+        *,
+        skip: int,
+        limit: int,
+    ) -> PaginatedResponse[dict[str, Any]]:
         ...
 
     async def create_row(

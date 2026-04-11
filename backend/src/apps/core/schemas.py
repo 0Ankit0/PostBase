@@ -16,7 +16,6 @@ class PaginatedResponse(BaseModel, Generic[T]):
     total: int
     skip: int
     limit: int
-    has_more: bool
     
     @classmethod
     def create(cls, items: Sequence[T], total: int, skip: int, limit: int):
@@ -25,5 +24,4 @@ class PaginatedResponse(BaseModel, Generic[T]):
             total=total,
             skip=skip,
             limit=limit,
-            has_more=(skip + len(items)) < total
         )

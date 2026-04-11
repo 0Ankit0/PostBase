@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Query
 
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.contracts import FacadeStatusResponse
 from src.postbase.capabilities.functions.contracts import (
     ExecutionRead,
@@ -22,12 +23,14 @@ async def create_function(
     return await provider.create_function(context, payload)
 
 
-@router.get("", response_model=list[FunctionRead])
+@router.get("", response_model=PaginatedResponse[FunctionRead])
 async def list_functions(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=25, ge=1, le=100),
     context=Depends(get_access_context),
     provider=Depends(get_functions_provider),
-) -> list[FunctionRead]:
-    return await provider.list_functions(context)
+) -> PaginatedResponse[FunctionRead]:
+    return await provider.list_functions(context, skip=skip, limit=limit)
 
 
 @router.post("/{function_id}/invoke", response_model=ExecutionRead)
@@ -50,13 +53,15 @@ async def invoke_function(
     )
 
 
-@router.get("/{function_id}/executions", response_model=list[ExecutionRead])
+@router.get("/{function_id}/executions", response_model=PaginatedResponse[ExecutionRead])
 async def list_executions(
     function_id: int,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=25, ge=1, le=100),
     context=Depends(get_access_context),
     provider=Depends(get_functions_provider),
-) -> list[ExecutionRead]:
-    return await provider.list_executions(context, function_id)
+) -> PaginatedResponse[ExecutionRead]:
+    return await provider.list_executions(context, function_id, skip=skip, limit=limit)
 
 
 @router.get("/status", response_model=FacadeStatusResponse)

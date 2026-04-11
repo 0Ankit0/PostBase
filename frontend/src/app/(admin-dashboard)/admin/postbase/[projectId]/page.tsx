@@ -348,7 +348,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         <SecretForm environmentId={selectedEnvironment?.id} secrets={secretItems} isProductionEnvironment={isProductionEnvironment} />
         <BindingForm
           environmentId={selectedEnvironment?.id}
-          providerCatalog={providerCatalog ?? []}
+          providerCatalog={providerCatalog?.items ?? []}
           bindings={bindingItems}
           secrets={secretItems.map((item) => item.id)}
           isProductionEnvironment={isProductionEnvironment}

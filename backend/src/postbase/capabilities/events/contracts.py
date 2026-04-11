@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from src.apps.core.schemas import PaginatedResponse
 from src.postbase.platform.contracts import ProviderAdapter
 
 
@@ -63,7 +64,7 @@ class EventsProvider(ProviderAdapter, Protocol):
     async def create_channel(self, context, payload: ChannelCreateRequest) -> ChannelRead:
         ...
 
-    async def list_channels(self, context) -> list[ChannelRead]:
+    async def list_channels(self, context, *, skip: int, limit: int) -> PaginatedResponse[ChannelRead]:
         ...
 
     async def create_subscription(self, context, channel_id: int, payload: SubscriptionCreateRequest) -> SubscriptionRead:
