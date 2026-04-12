@@ -142,23 +142,41 @@ class StripeService(BasePaymentProvider):
         if not session_id:
             raise ValueError("session_id (pidx) is required for Stripe verification")
 
-        result = await db.execute(
-            select(PaymentTransaction).where(
-                PaymentTransaction.provider_pidx == session_id
+        tx: PaymentTransaction | None = None
+        if request.transaction_id is not None:
+            tx = await self._get_transaction(db, request.transaction_id)
+            if tx.provider != PaymentProvider.STRIPE:
+                raise ValueError("transaction_id does not belong to provider 'stripe'")
+            if tx.provider_pidx != session_id:
+                raise ValueError("Stripe session_id does not match the transaction_id record")
+        else:
+            result = await db.execute(
+                select(PaymentTransaction).where(
+                    PaymentTransaction.provider_pidx == session_id
+                )
             )
-        )
-        tx: PaymentTransaction | None = result.scalars().first()
+            tx = result.scalars().first()
 
         if tx is None:
             raise ValueError(f"No transaction found for Stripe session_id={session_id}")
-        if tx.user_id != current_user.id and not current_user.is_superuser:
-            raise PermissionError("Not authorized to verify this transaction")
+        self._assert_transaction_owner(tx, current_user)
+        self._assert_transaction_verifiable(tx)
         if tx.currency != request.currency:
             raise ValueError(
                 f"Currency mismatch for Stripe verification: expected {tx.currency}, got {request.currency}"
             )
 
         session = stripe.checkout.Session.retrieve(session_id)
+        provider_amount = getattr(session, "amount_total", None)
+        provider_currency = getattr(session, "currency", None)
+        if provider_amount is not None and int(provider_amount) != tx.amount:
+            raise ValueError(
+                f"Stripe amount mismatch: expected {tx.amount}, got {provider_amount}"
+            )
+        if provider_currency and provider_currency.upper() != tx.currency:
+            raise ValueError(
+                f"Stripe currency mismatch: expected {tx.currency}, got {provider_currency.upper()}"
+            )
         our_status = _STATUS_MAP.get(session.status, PaymentStatus.FAILED)
         if session.status == "complete" and session.payment_status == "paid":
             our_status = PaymentStatus.COMPLETED
@@ -182,7 +200,7 @@ class StripeService(BasePaymentProvider):
             status=our_status,
             amount=tx.amount,
             currency=tx.currency,
-            provider_transaction_id=session.payment_intent,
+            provider_transaction_id=tx.provider_transaction_id,
             extra={
                 "session_id": session.id,
                 "payment_status": session.payment_status,

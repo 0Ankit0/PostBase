@@ -1,8 +1,9 @@
 """Abstract base class for all payment provider integrations."""
 from abc import ABC, abstractmethod
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.apps.finance.models.payment import PaymentTransaction
+from src.apps.finance.models.payment import PaymentStatus, PaymentTransaction
 from src.apps.finance.schemas.payment import (
     InitiatePaymentRequest,
     InitiatePaymentResponse,
@@ -69,3 +70,19 @@ class BasePaymentProvider(ABC):
         if tx is None:
             raise ValueError(f"PaymentTransaction {transaction_id} not found")
         return tx
+
+    def _assert_transaction_owner(self, tx: PaymentTransaction, current_user: User) -> None:
+        """Ensure the acting user owns the transaction unless they are a superuser."""
+        if tx.user_id != current_user.id and not current_user.is_superuser:
+            raise PermissionError("Not authorized to verify this transaction")
+
+    def _assert_transaction_verifiable(self, tx: PaymentTransaction) -> None:
+        """Prevent duplicate verification for already-finalized transactions."""
+        if tx.status in {
+            PaymentStatus.COMPLETED,
+            PaymentStatus.REFUNDED,
+            PaymentStatus.CANCELLED,
+        }:
+            raise ValueError(
+                f"Transaction already finalized with status={tx.status.value}"
+            )

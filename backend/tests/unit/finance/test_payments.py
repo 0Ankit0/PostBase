@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.apps.finance.models.payment import PaymentProvider, PaymentStatus, PaymentTransaction
 from src.apps.iam.api.deps import get_current_user
 from src.apps.iam.models.user import User
+from src.apps.iam.utils.hashid import encode_id
 from src.main import app
 
 
@@ -289,7 +290,7 @@ class TestKhaltiPayment:
         data = resp.json()
         assert data["status"] == "completed"
         assert data["provider_transaction_id"] == "KHALTI_TXN_XYZ"
-        assert data["transaction_id"] == tx.id
+        assert data["transaction_id"] == encode_id(tx.id)
         assert data["amount"] == 1000
         assert data["currency"] == "NPR"
 
@@ -343,6 +344,76 @@ class TestKhaltiPayment:
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "cancelled"
+
+    @pytest.mark.unit
+    async def test_khalti_verify_rejects_duplicate_verification(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        tx = PaymentTransaction(
+            provider=PaymentProvider.KHALTI,
+            amount=1000,
+            currency="NPR",
+            purchase_order_id="ORDER-DUP",
+            purchase_order_name="Duplicate Verify",
+            return_url="http://localhost:3000/callback",
+            website_url="",
+            status=PaymentStatus.COMPLETED,
+            provider_pidx="pidx_dup",
+        )
+        db_session.add(tx)
+        await db_session.commit()
+
+        resp = await client.post(
+            "/api/v1/payments/verify/",
+            json={"provider": "khalti", "pidx": "pidx_dup", "currency": "NPR"},
+        )
+
+        assert resp.status_code == 400
+        assert "already finalized" in resp.json()["detail"]
+
+    @pytest.mark.unit
+    async def test_khalti_verify_pending_status_mapping(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        tx = PaymentTransaction(
+            provider=PaymentProvider.KHALTI,
+            amount=1000,
+            currency="NPR",
+            purchase_order_id="ORDER-PENDING",
+            purchase_order_name="Pending Verify",
+            return_url="http://localhost:3000/callback",
+            website_url="",
+            status=PaymentStatus.INITIATED,
+            provider_pidx="pidx_pending",
+        )
+        db_session.add(tx)
+        await db_session.commit()
+
+        mock_response = MagicMock(spec=Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "pidx": "pidx_pending",
+            "total_amount": 1000,
+            "status": "Pending",
+            "transaction_id": None,
+        }
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch("src.apps.finance.services.khalti.httpx.AsyncClient", return_value=mock_client):
+            resp = await client.post(
+                "/api/v1/payments/verify/",
+                json={"provider": "khalti", "pidx": "pidx_pending", "currency": "NPR"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +517,7 @@ class TestEsewaPayment:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "completed"
-        assert data["transaction_id"] == tx.id
+        assert data["transaction_id"] == encode_id(tx.id)
         assert data["amount"] == 100
         assert data["currency"] == "NPR"
 
@@ -478,6 +549,30 @@ class TestEsewaPayment:
         )
         assert resp.status_code == 400
 
+    @pytest.mark.unit
+    async def test_esewa_verify_rejects_amount_tampering(self, client: AsyncClient, db_session: AsyncSession):
+        tx = PaymentTransaction(
+            provider=PaymentProvider.ESEWA,
+            amount=250,
+            currency="NPR",
+            purchase_order_id="ESEWA-AMOUNT-MISMATCH",
+            purchase_order_name="Amount Mismatch",
+            return_url="http://localhost:3000/callback",
+            website_url="",
+            status=PaymentStatus.INITIATED,
+            provider_pidx="esewa-mismatch-uuid",
+        )
+        db_session.add(tx)
+        await db_session.commit()
+
+        callback_data = _esewa_callback_data("esewa-mismatch-uuid", total_amount=100)
+        resp = await client.post(
+            "/api/v1/payments/verify/",
+            json={"provider": "esewa", "currency": "NPR", "data": callback_data},
+        )
+        assert resp.status_code == 400
+        assert "amount mismatch" in resp.json()["detail"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Generic transaction CRUD tests
@@ -506,7 +601,7 @@ class TestTransactionCRUD:
         await db_session.commit()
         await db_session.refresh(tx)
 
-        resp = await client.get(f"/api/v1/payments/{tx.id}/")
+        resp = await client.get(f"/api/v1/payments/{encode_id(tx.id)}/")
         assert resp.status_code == 200
         data = resp.json()
         assert data["purchase_order_id"] == "TX-READ-001"

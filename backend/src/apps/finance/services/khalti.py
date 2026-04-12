@@ -190,14 +190,22 @@ class KhaltiService(BasePaymentProvider):
             raise ValueError("pidx is required for Khalti verification")
 
         from sqlmodel import select
-        result = await db.execute(
-            select(PaymentTransaction).where(PaymentTransaction.provider_pidx == pidx)
-        )
-        tx: PaymentTransaction | None = result.scalars().first()
+        tx: PaymentTransaction | None = None
+        if request.transaction_id is not None:
+            tx = await self._get_transaction(db, request.transaction_id)
+            if tx.provider != PaymentProvider.KHALTI:
+                raise ValueError("transaction_id does not belong to provider 'khalti'")
+            if tx.provider_pidx != pidx:
+                raise ValueError("Khalti pidx does not match the transaction_id record")
+        else:
+            result = await db.execute(
+                select(PaymentTransaction).where(PaymentTransaction.provider_pidx == pidx)
+            )
+            tx = result.scalars().first()
         if tx is None:
             raise ValueError(f"No transaction found for Khalti pidx={pidx}")
-        if tx.user_id != current_user.id and not current_user.is_superuser:
-            raise PermissionError("Not authorized to verify this transaction")
+        self._assert_transaction_owner(tx, current_user)
+        self._assert_transaction_verifiable(tx)
         if tx.currency != request.currency:
             raise ValueError(
                 f"Currency mismatch for Khalti verification: expected {tx.currency}, got {request.currency}"
@@ -223,9 +231,14 @@ class KhaltiService(BasePaymentProvider):
             "Refunded": PaymentStatus.REFUNDED,
         }
         our_status = status_map.get(khalti_status, PaymentStatus.FAILED)
+        provider_amount = data.get("total_amount")
+        if provider_amount is not None and int(provider_amount) != tx.amount:
+            raise ValueError(
+                f"Khalti amount mismatch: expected {tx.amount}, got {provider_amount}"
+            )
 
         tx.status = our_status
-        tx.provider_transaction_id = transaction_id_provider
+        tx.provider_transaction_id = transaction_id_provider or tx.provider_transaction_id
         tx.extra_data = json.dumps(data)
         tx.updated_at = datetime.now()
         db.add(tx)

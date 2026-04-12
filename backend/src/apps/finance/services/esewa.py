@@ -200,20 +200,34 @@ class EsewaService(BasePaymentProvider):
             raise ValueError("transaction_uuid missing from eSewa callback")
 
         from sqlmodel import select
-        result = await db.execute(
-            select(PaymentTransaction).where(
-                PaymentTransaction.provider_pidx == transaction_uuid
+        tx: PaymentTransaction | None = None
+        if request.transaction_id is not None:
+            tx = await self._get_transaction(db, request.transaction_id)
+            if tx.provider != PaymentProvider.ESEWA:
+                raise ValueError("transaction_id does not belong to provider 'esewa'")
+            if tx.provider_pidx != transaction_uuid:
+                raise ValueError("eSewa callback transaction_uuid does not match transaction_id")
+        else:
+            result = await db.execute(
+                select(PaymentTransaction).where(
+                    PaymentTransaction.provider_pidx == transaction_uuid
+                )
             )
-        )
-        tx: PaymentTransaction | None = result.scalars().first()
+            tx = result.scalars().first()
         if tx is None:
             raise ValueError(f"No transaction found for eSewa transaction_uuid={transaction_uuid}")
-        if tx.user_id != current_user.id and not current_user.is_superuser:
-            raise PermissionError("Not authorized to verify this transaction")
+        self._assert_transaction_owner(tx, current_user)
+        self._assert_transaction_verifiable(tx)
         if tx.currency != request.currency:
             raise ValueError(
                 f"Currency mismatch for eSewa verification: expected {tx.currency}, got {request.currency}"
             )
+        if cb.total_amount is not None and int(cb.total_amount) != tx.amount:
+            raise ValueError(
+                f"eSewa amount mismatch: expected {tx.amount}, got {cb.total_amount}"
+            )
+        if cb.product_code and cb.product_code != settings.ESEWA_MERCHANT_CODE:
+            raise ValueError("eSewa callback product_code is invalid")
 
         async with httpx.AsyncClient() as client:
             resp = await retry_async(
@@ -249,7 +263,11 @@ class EsewaService(BasePaymentProvider):
 
         # ------ update transaction ----------------------------------------
         tx.status = our_status
-        tx.provider_transaction_id = cb.transaction_code or esewa_status_data.get("ref_id")
+        tx.provider_transaction_id = (
+            cb.transaction_code
+            or esewa_status_data.get("ref_id")
+            or tx.provider_transaction_id
+        )
         tx.extra_data = json.dumps({
             "callback": decoded,
             "status_api": esewa_status_data,
