@@ -9,6 +9,7 @@ from src.apps.multitenancy.models.tenant import Tenant, TenantMember, TenantRole
 from src.apps.iam.utils.hashid import decode_id_or_404, encode_id
 from src.postbase.domain.enums import BindingStatus, MigrationStatus, SwitchoverStatus
 from src.postbase.domain.models import (
+    AuditLog,
     CapabilityBinding,
     DataNamespace,
     SchemaMigration,
@@ -814,6 +815,18 @@ async def test_migration_apply_partial_failure_rolls_back_and_records_error(clie
     assert execution is not None
     assert execution.status == MigrationStatus.FAILED
     assert "synthetic migration failure" in execution.error_text
+    namespace = await db_session.get(DataNamespace, migration.namespace_id)
+    definition = await db_session.get(TableDefinition, migration.table_definition_id)
+    assert namespace is not None
+    assert definition is not None
+    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
+    table_exists = (
+        await db_session.execute(
+            text("SELECT name FROM sqlite_master WHERE type = 'table' AND name = :table_name"),
+            {"table_name": physical_table_name},
+        )
+    ).first()
+    assert table_exists is None
 
 
 @pytest.mark.asyncio
@@ -1314,6 +1327,19 @@ async def test_binding_status_transition_uniqueness_and_audit_metadata(client, d
     payload = disabled_response.json()
     assert payload["last_transition_reason"] == "temporary shutdown"
     assert payload["last_transition_actor_user_id"] is not None
+    binding_db_id = decode_id_or_404(storage_binding["id"])
+    audit_rows = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "binding.status_updated",
+                AuditLog.entity_type == "capability_binding",
+                AuditLog.entity_id == str(binding_db_id),
+            )
+        )
+    ).scalars().all()
+    transition_keys = [(row.payload_json or {}).get("transition_key") for row in audit_rows]
+    assert len(audit_rows) == 1
+    assert transition_keys[0]
 
 
 @pytest.mark.asyncio
@@ -1381,6 +1407,18 @@ async def test_switchover_cutover_records_execution_state_and_retirement_strateg
         "validate_cutover",
         "retire_old_binding",
     ]
+    switchover_db_id = decode_id_or_404(plan_response.json()["id"])
+    audit_rows = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "binding.switchover_executed",
+                AuditLog.entity_type == "switchover_plan",
+                AuditLog.entity_id == str(switchover_db_id),
+            )
+        )
+    ).scalars().all()
+    assert len(audit_rows) == 1
+    assert (audit_rows[0].payload_json or {}).get("transition_key")
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from datetime import timezone, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -46,7 +47,7 @@ from src.postbase.platform.access import (
     issue_environment_api_key,
     validate_identifier,
 )
-from src.postbase.platform.audit import record_audit_event
+from src.postbase.platform.audit import record_audit_event, record_transition_audit_event_once
 from src.postbase.platform.idempotency import IdempotencyReplay, IdempotencyService
 from src.postbase.platform.contracts import CapabilityProfile
 from src.postbase.platform.registry import provider_registry
@@ -115,6 +116,29 @@ LEGAL_ENVIRONMENT_STATUS_TRANSITIONS: dict[EnvironmentStatus, set[EnvironmentSta
     EnvironmentStatus.DEGRADED: {EnvironmentStatus.ACTIVE, EnvironmentStatus.INACTIVE},
     EnvironmentStatus.INACTIVE: {EnvironmentStatus.ACTIVE},
 }
+
+
+def _assert_binding_state_invariants(binding: CapabilityBinding) -> None:
+    if binding.status == BindingStatus.ACTIVE and not binding.last_transition_at:
+        raise RuntimeError("binding invariant violated: active binding must record transition timestamp")
+
+
+def _assert_switchover_state_invariants(switchover: SwitchoverPlan) -> None:
+    execution_state = switchover.execution_state_json or {}
+    if switchover.status == SwitchoverStatus.COMPLETED:
+        completed_phases = execution_state.get("completed_phases", [])
+        if execution_state.get("phase") != "completed" or completed_phases != SWITCHOVER_PHASE_ORDER[:-1]:
+            raise RuntimeError("switchover invariant violated: completed switchover must have completed phase state")
+        if switchover.completed_at is None:
+            raise RuntimeError("switchover invariant violated: completed switchover must have completed_at")
+
+
+def _assert_migration_state_invariants(migration: SchemaMigration) -> None:
+    if migration.status == MigrationStatus.APPLIED:
+        if migration.reconciliation_status != "in_sync" or migration.drift_severity != "none":
+            raise RuntimeError("migration invariant violated: applied migration must be in_sync with no drift")
+    if migration.status == MigrationStatus.FAILED and migration.reconciliation_status != "drifted":
+        raise RuntimeError("migration invariant violated: failed migration must be drifted")
 
 
 def build_idempotency_endpoint_fingerprint(*, method: str, path: str) -> str:
@@ -612,14 +636,33 @@ async def rotate_secret_ref(
         last_four=secret_value[-4:] if secret_value else "",
         rotated_at=datetime.now(timezone.utc),
     )
-    if current_active is not None:
-        current_active.is_active_version = False
-        touch_updated_at(current_active)
-    secret_ref.is_active_version = False
-    touch_updated_at(secret_ref)
-    db.add(rotated_secret)
     try:
+        if current_active is not None:
+            current_active.is_active_version = False
+            touch_updated_at(current_active)
+        secret_ref.is_active_version = False
+        touch_updated_at(secret_ref)
+        db.add(rotated_secret)
         await db.flush()
+
+        for binding_id in impacted_bindings:
+            binding = await db.get(CapabilityBinding, binding_id)
+            if binding is None:
+                continue
+            binding.readiness_detail = "secret rotated; revalidation pending"
+            touch_updated_at(binding)
+        await record_audit_event(
+            db,
+            action="secret.rotated",
+            entity_type="secret_ref",
+            entity_id=str(secret_ref.id),
+            actor_user_id=actor.id,
+            tenant_id=project.tenant_id,
+            project_id=project.id,
+            environment_id=environment.id,
+            payload={"name": secret_ref.name, "provider_key": secret_ref.provider_key, "impacted_bindings": impacted_bindings},
+        )
+        await db.commit()
     except Exception as exc:
         await db.rollback()
         await record_audit_event(
@@ -635,18 +678,6 @@ async def rotate_secret_ref(
         )
         await db.commit()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Secret rotation failed") from exc
-    await record_audit_event(
-        db,
-        action="secret.rotated",
-        entity_type="secret_ref",
-        entity_id=str(secret_ref.id),
-        actor_user_id=actor.id,
-        tenant_id=project.tenant_id,
-        project_id=project.id,
-        environment_id=environment.id,
-        payload={"name": secret_ref.name, "provider_key": secret_ref.provider_key},
-    )
-    await db.commit()
     await db.refresh(rotated_secret)
     return rotated_secret
 
@@ -804,6 +835,7 @@ async def apply_schema_migration(
     definition = await db.get(TableDefinition, migration.table_definition_id)
     namespace = await db.get(DataNamespace, migration.namespace_id)
     provider = PostgresNativeDataProvider()
+    table_created = False
     try:
         migration.status = MigrationStatus.PENDING
         touch_updated_at(migration)
@@ -812,6 +844,7 @@ async def apply_schema_migration(
         if definition is not None and namespace is not None:
             await provider.create_namespace(db, namespace)
             await provider.create_table(db, namespace, definition)
+            table_created = True
             definition.status = "active"
             touch_updated_at(definition)
 
@@ -823,8 +856,9 @@ async def apply_schema_migration(
         migration.last_reconciled_at = datetime.now(timezone.utc)
         touch_updated_at(migration)
         await _finish_migration_execution(db, execution=execution, status=MigrationStatus.APPLIED)
-        await record_audit_event(
+        await record_transition_audit_event_once(
             db,
+            transition_key=f"migration:{migration.id}:applied:{execution.id}",
             action="migration.applied",
             entity_type="schema_migration",
             entity_id=str(migration.id),
@@ -837,6 +871,9 @@ async def apply_schema_migration(
         await db.commit()
     except Exception as exc:
         await db.rollback()
+        if table_created and namespace is not None and definition is not None:
+            qualified = f'"{namespace.physical_schema}__{definition.table_name}"'
+            await db.execute(text(f"DROP TABLE IF EXISTS {qualified}"))
         migration = await db.get(SchemaMigration, migration.id)
         if migration is None:
             raise
@@ -859,6 +896,7 @@ async def apply_schema_migration(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Migration apply failed: {exc}") from exc
 
     await db.refresh(migration)
+    _assert_migration_state_invariants(migration)
     return migration
 
 
@@ -1340,8 +1378,9 @@ async def execute_switchover_plan(
         switchover.execution_detail = f"rollback_complete:{exc}"
         switchover.completed_at = datetime.now(timezone.utc)
         await db.flush()
-        await record_audit_event(
+        await record_transition_audit_event_once(
             db,
+            transition_key=f"switchover:{switchover.id}:failed:{switchover.completed_at.isoformat() if switchover.completed_at else 'na'}",
             action="binding.switchover_failed",
             entity_type="switchover_plan",
             entity_id=str(switchover.id),
@@ -1354,8 +1393,9 @@ async def execute_switchover_plan(
         await db.commit()
         await db.refresh(switchover)
         return switchover
-    await record_audit_event(
+    await record_transition_audit_event_once(
         db,
+        transition_key=f"switchover:{switchover.id}:completed:{switchover.completed_at.isoformat() if switchover.completed_at else 'na'}",
         action="binding.switchover_executed",
         entity_type="switchover_plan",
         entity_id=str(switchover.id),
@@ -1372,6 +1412,7 @@ async def execute_switchover_plan(
     )
     await db.commit()
     await db.refresh(switchover)
+    _assert_switchover_state_invariants(switchover)
     return switchover
 
 
@@ -1642,8 +1683,9 @@ async def set_binding_status(
                 ),
             ) from exc
         raise
-    await record_audit_event(
+    await record_transition_audit_event_once(
         db,
+        transition_key=f"binding:{binding.id}:{binding.status.value}:{binding.last_transition_at.isoformat() if binding.last_transition_at else 'na'}",
         action="binding.status_updated",
         entity_type="capability_binding",
         entity_id=str(binding.id),
@@ -1655,6 +1697,7 @@ async def set_binding_status(
     )
     await db.commit()
     await db.refresh(binding)
+    _assert_binding_state_invariants(binding)
     return binding
 
 
