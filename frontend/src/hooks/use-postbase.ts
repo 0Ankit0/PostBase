@@ -16,6 +16,9 @@ import type {
   PostBaseSecretRead,
   PostBaseSecretRotateResult,
   PostBaseSwitchoverRead,
+  PostBaseFunctionDeploymentEventRead,
+  PostBaseFunctionRevisionRead,
+  PostBaseFunctionScheduleRead,
   PostBaseUsageMeterRead,
   PostBaseWebhookDrainResult,
   PostBaseWebhookRecoveryResult,
@@ -583,5 +586,56 @@ export function useReconcilePostBaseMigration(environmentId: string | undefined)
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', environmentId, 'health'] });
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId] });
     },
+  });
+}
+
+export function usePostBaseFunctionSchedules(functionId: string | undefined, params?: PostBasePaginationParams) {
+  const pagination = normalizePaginationParams(params);
+
+  return useQuery({
+    queryKey: ['postbase', 'functions', functionId, 'schedules', pagination.skip, pagination.limit],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<PostBaseFunctionScheduleRead>>(
+        `/functions/${functionId}/schedules`,
+        { params: pagination },
+      );
+      return response.data;
+    },
+    enabled: Boolean(functionId),
+    staleTime: 10_000,
+  });
+}
+
+export function usePostBaseFunctionDeployments(functionId: string | undefined, params?: PostBasePaginationParams) {
+  const pagination = normalizePaginationParams(params);
+
+  return useQuery({
+    queryKey: ['postbase', 'functions', functionId, 'deployments', pagination.skip, pagination.limit],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<PostBaseFunctionDeploymentEventRead>>(
+        `/functions/${functionId}/deployments`,
+        { params: pagination },
+      );
+      return response.data;
+    },
+    enabled: Boolean(functionId),
+    staleTime: 10_000,
+  });
+}
+
+export function usePostBaseFunctionRevisions(functionId: string | undefined, params?: PostBasePaginationParams) {
+  const pagination = normalizePaginationParams(params);
+
+  return useQuery({
+    queryKey: ['postbase', 'functions', functionId, 'revisions', pagination.skip, pagination.limit],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<PostBaseFunctionRevisionRead>>(
+        `/functions/${functionId}/revisions`,
+        { params: pagination },
+      );
+      return response.data;
+    },
+    enabled: Boolean(functionId),
+    staleTime: 10_000,
   });
 }

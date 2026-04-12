@@ -222,6 +222,9 @@ export interface PostBaseFunctionExecutionRead {
   retry_count: number;
   timeout_ms: number | null;
   cancel_requested: boolean;
+  schedule_id: number | null;
+  trigger_source: string;
+  execution_metadata_json: Record<string, unknown>;
   status: string;
   input_json: Record<string, unknown>;
   output_json: Record<string, unknown>;
@@ -229,6 +232,40 @@ export interface PostBaseFunctionExecutionRead {
   started_at: string;
   completed_at: string | null;
   log_excerpt: string;
+}
+
+export interface PostBaseFunctionScheduleRead {
+  id: number;
+  function_definition_id: number;
+  name: string;
+  schedule_type: string;
+  cron_expr: string | null;
+  interval_seconds: number | null;
+  timezone: string;
+  status: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  run_count: number;
+}
+
+export interface PostBaseFunctionDeploymentEventRead {
+  id: number;
+  function_definition_id: number;
+  revision_id: number | null;
+  event_type: string;
+  actor_user_id: number | null;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface PostBaseFunctionRevisionRead {
+  id: number;
+  function_definition_id: number;
+  revision: number;
+  source_ref: string;
+  handler_type: string;
+  runtime_profile: string;
+  created_at: string;
 }
 
 export interface PostBaseEventDeliveryRead {

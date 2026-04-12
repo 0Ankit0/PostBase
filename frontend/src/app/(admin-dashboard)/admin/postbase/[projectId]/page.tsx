@@ -14,6 +14,9 @@ import {
   useDeactivatePostBaseSecret,
   useDrainPostBaseWebhooks,
   useExecutePostBaseSwitchover,
+  usePostBaseFunctionDeployments,
+  usePostBaseFunctionRevisions,
+  usePostBaseFunctionSchedules,
   usePostBaseBindings,
   usePostBaseBindingSwitchovers,
   usePostBaseCapabilityHealth,
@@ -74,6 +77,10 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
 
   const healthQuery = usePostBaseCapabilityHealth(selectedEnvironment?.id);
   const { data: health } = healthQuery;
+  const selectedFunctionId = searchParams.get('functionId') ?? undefined;
+  const { data: functionSchedules } = usePostBaseFunctionSchedules(selectedFunctionId);
+  const { data: functionDeployments } = usePostBaseFunctionDeployments(selectedFunctionId);
+  const { data: functionRevisions } = usePostBaseFunctionRevisions(selectedFunctionId);
   const { data: bindings } = usePostBaseBindings(selectedEnvironment?.id);
   const { data: secrets } = usePostBaseSecrets(selectedEnvironment?.id);
   const { data: migrations } = usePostBaseMigrations(selectedEnvironment?.id);
@@ -364,6 +371,47 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Function scheduler & deployment history</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <p className="text-xs text-gray-500">
+            Select a function with <code>?functionId=&lt;id&gt;</code> in the URL to inspect schedules and deployments.
+          </p>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            <div>
+              <p className="mb-1 font-medium text-gray-900">Schedules</p>
+              {(functionSchedules?.items ?? []).map((schedule) => (
+                <div key={schedule.id} className="rounded border border-gray-200 p-2 text-xs">
+                  <p className="font-medium">{schedule.name}</p>
+                  <p className="text-gray-500">{schedule.schedule_type} · {schedule.status}</p>
+                  <p className="text-gray-500">runs: {schedule.run_count}</p>
+                </div>
+              ))}
+            </div>
+            <div>
+              <p className="mb-1 font-medium text-gray-900">Deployment history</p>
+              {(functionDeployments?.items ?? []).map((event) => (
+                <div key={event.id} className="rounded border border-gray-200 p-2 text-xs">
+                  <p className="font-medium">{event.event_type}</p>
+                  <p className="text-gray-500">revision: {event.revision_id ?? 'n/a'}</p>
+                </div>
+              ))}
+            </div>
+            <div>
+              <p className="mb-1 font-medium text-gray-900">Revisions</p>
+              {(functionRevisions?.items ?? []).map((revision) => (
+                <div key={revision.id} className="rounded border border-gray-200 p-2 text-xs">
+                  <p className="font-medium">r{revision.revision}</p>
+                  <p className="text-gray-500">{revision.runtime_profile} · {revision.handler_type}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <StorageValidationCard
         bindings={storageBindings}

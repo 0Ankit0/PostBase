@@ -33,6 +33,10 @@ class Project(SQLModel, table=True):
     name: str = Field(max_length=120)
     slug: str = Field(max_length=63, index=True)
     description: str = Field(default="", max_length=500)
+    env_policy_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -51,6 +55,10 @@ class Environment(SQLModel, table=True):
     status: EnvironmentStatus = Field(default=EnvironmentStatus.ACTIVE)
     readiness_state: ReadinessState = Field(default=ReadinessState.READY)
     readiness_detail: str = Field(default="", max_length=500)
+    env_policy_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
     last_validated_at: datetime | None = Field(default=None)
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
@@ -468,9 +476,77 @@ class FunctionDefinition(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, default=dict),
     )
+    env_policy_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class FunctionSchedule(SQLModel, table=True):
+    __tablename__ = "postbase_function_schedule"
+    __table_args__ = (
+        UniqueConstraint("function_definition_id", "name", name="uq_postbase_function_schedule_function_name"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    function_definition_id: int = Field(foreign_key="postbase_function_definition.id", index=True)
+    environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
+    name: str = Field(max_length=120)
+    schedule_type: str = Field(default="cron", max_length=16)
+    cron_expr: str | None = Field(default=None, max_length=120)
+    interval_seconds: int | None = Field(default=None)
+    timezone: str = Field(default="UTC", max_length=64)
+    status: str = Field(default="active", max_length=20, index=True)
+    misfire_grace_seconds: int = Field(default=60)
+    max_jitter_seconds: int = Field(default=0)
+    last_scheduled_at: datetime | None = Field(default=None)
+    last_run_at: datetime | None = Field(default=None)
+    next_run_at: datetime | None = Field(default=None, index=True)
+    run_count: int = Field(default=0)
+    last_execution_id: int | None = Field(default=None, foreign_key="postbase_execution_record.id")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class FunctionDeploymentRevision(SQLModel, table=True):
+    __tablename__ = "postbase_function_deployment_revision"
+
+    id: int | None = Field(default=None, primary_key=True)
+    function_definition_id: int = Field(foreign_key="postbase_function_definition.id", index=True)
+    environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
+    revision: int = Field(default=1)
+    source_ref: str = Field(default="", max_length=255)
+    handler_type: str = Field(default="echo", max_length=40)
+    runtime_profile: str = Field(default="celery-runtime", max_length=80)
+    config_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
+    env_policy_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
+    deployed_by_user_id: int | None = Field(default=None, foreign_key="user.id", index=True)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class FunctionDeploymentEvent(SQLModel, table=True):
+    __tablename__ = "postbase_function_deployment_event"
+
+    id: int | None = Field(default=None, primary_key=True)
+    function_definition_id: int = Field(foreign_key="postbase_function_definition.id", index=True)
+    environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
+    revision_id: int | None = Field(default=None, foreign_key="postbase_function_deployment_revision.id", index=True)
+    event_type: str = Field(default="deploy", max_length=32, index=True)
+    actor_user_id: int | None = Field(default=None, foreign_key="user.id", index=True)
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
+    created_at: datetime = Field(default_factory=utcnow, index=True)
 
 
 class ExecutionRecord(SQLModel, table=True):
@@ -487,6 +563,12 @@ class ExecutionRecord(SQLModel, table=True):
     retry_count: int = Field(default=0)
     timeout_ms: int | None = Field(default=None)
     cancel_requested: bool = Field(default=False)
+    schedule_id: int | None = Field(default=None, foreign_key="postbase_function_schedule.id", index=True)
+    trigger_source: str = Field(default="manual", max_length=24)
+    execution_metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
     log_excerpt: str = Field(default="")
     status: str = Field(default="completed", max_length=32, index=True)
     input_json: dict[str, Any] = Field(
