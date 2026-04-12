@@ -9,6 +9,74 @@ export const apiClient = axios.create({
   },
 });
 
+export type CanonicalFilterOperator =
+  | 'eq'
+  | 'neq'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'in'
+  | 'nin'
+  | 'contains'
+  | 'icontains'
+  | 'is_null';
+
+export interface CanonicalFilterClause {
+  field: string;
+  op: CanonicalFilterOperator;
+  value?: unknown;
+}
+
+export interface CanonicalSortClause {
+  field: string;
+  direction?: 'asc' | 'desc';
+}
+
+export interface CanonicalPagination {
+  limit?: number;
+  offset?: number;
+}
+
+export interface CanonicalDataQueryPayload {
+  namespace: string;
+  table: string;
+  filters?: CanonicalFilterClause[];
+  sort?: CanonicalSortClause[];
+  pagination?: CanonicalPagination;
+}
+
+export interface CanonicalPaginatedRequest {
+  skip?: number;
+  limit?: number;
+}
+
+export const dataApi = {
+  queryRows: async (payload: CanonicalDataQueryPayload) => {
+    const normalizedPayload: CanonicalDataQueryPayload = {
+      ...payload,
+      filters: payload.filters ?? [],
+      sort: payload.sort ?? [],
+      pagination: {
+        limit: payload.pagination?.limit ?? 100,
+        offset: payload.pagination?.offset ?? 0,
+      },
+    };
+    const response = await apiClient.post('/data/query', normalizedPayload);
+    return response.data;
+  },
+
+  listRows: async (namespace: string, table: string, pagination: CanonicalPaginatedRequest = {}) => {
+    const response = await apiClient.get(`/data/${namespace}/${table}`, {
+      params: {
+        skip: pagination.skip ?? 0,
+        limit: pagination.limit ?? 25,
+      },
+    });
+    return response.data;
+  },
+};
+
 apiClient.interceptors.request.use((config) => {
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('access_token');

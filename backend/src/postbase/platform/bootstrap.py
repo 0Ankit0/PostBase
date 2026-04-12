@@ -2,6 +2,7 @@ from src.postbase.domain.enums import CapabilityKey
 from src.postbase.platform.registry import provider_registry
 from src.postbase.providers.auth.local_postgres import LocalPostgresAuthProvider
 from src.postbase.providers.auth.oidc_certified import OIDCCertifiedAuthProvider
+from src.postbase.providers.data.postgres_compat import PostgresCompatDataProvider
 from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
 from src.postbase.providers.events.redis_pubsub import RedisPubSubEventsProvider
 from src.postbase.providers.events.websocket_gateway import WebsocketGatewayEventsProvider
@@ -26,6 +27,11 @@ def bootstrap_postbase_runtime() -> None:
         CapabilityKey.DATA,
         "postgres-native",
         lambda: PostgresNativeDataProvider(),
+    )
+    provider_registry.register(
+        CapabilityKey.DATA,
+        "postgres-compat",
+        lambda: PostgresCompatDataProvider(),
     )
     provider_registry.register(
         CapabilityKey.STORAGE,

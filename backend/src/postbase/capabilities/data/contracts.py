@@ -1,26 +1,82 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.contracts import PostBaseContractModel
 from src.postbase.platform.contracts import ProviderAdapter
+
+CanonicalFilterOperator = Literal[
+    "eq",
+    "neq",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "in",
+    "nin",
+    "contains",
+    "icontains",
+    "is_null",
+]
 
 
 class DataMutationPayload(PostBaseContractModel):
     values: dict[str, Any] = Field(default_factory=dict)
 
 
+class DataFilterClause(PostBaseContractModel):
+    field: str
+    op: CanonicalFilterOperator = "eq"
+    value: Any | None = None
+
+
+class DataSortClause(PostBaseContractModel):
+    field: str
+    direction: Literal["asc", "desc"] = "asc"
+
+
+class DataPagination(PostBaseContractModel):
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
 class DataQueryRequest(PostBaseContractModel):
     namespace: str
     table: str
-    filters: dict[str, Any] = Field(default_factory=dict)
-    limit: int = 100
-    offset: int = 0
-    order_by: str | None = None
-    order_direction: str = "asc"
+    filters: list[DataFilterClause] = Field(default_factory=list)
+    pagination: DataPagination = Field(default_factory=DataPagination)
+    sort: list[DataSortClause] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_legacy_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+
+        payload = dict(value)
+
+        raw_filters = payload.get("filters", [])
+        if isinstance(raw_filters, dict):
+            payload["filters"] = [
+                {"field": field_name, "op": "eq", "value": field_value}
+                for field_name, field_value in raw_filters.items()
+            ]
+
+        if "pagination" not in payload:
+            payload["pagination"] = {
+                "limit": payload.pop("limit", 100),
+                "offset": payload.pop("offset", 0),
+            }
+
+        if "sort" not in payload:
+            order_by = payload.pop("order_by", None)
+            order_direction = payload.pop("order_direction", "asc")
+            payload["sort"] = [{"field": order_by, "direction": order_direction}] if order_by else []
+
+        return payload
 
 
 class DataQueryResult(PostBaseContractModel):
