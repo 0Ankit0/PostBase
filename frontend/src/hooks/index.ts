@@ -127,4 +127,7 @@ export {
   useDrainPostBaseWebhooks,
   useRecoverPostBaseWebhooks,
   useReconcilePostBaseMigration,
+  usePostBaseFunctionSchedules,
+  usePostBaseFunctionDeployments,
+  usePostBaseFunctionRevisions,
 } from './use-postbase';
