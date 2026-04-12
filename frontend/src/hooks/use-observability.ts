@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { apiClient } from '@/lib/api-client';
 import type {
+  AuthAuditTimelineResponse,
   ObservabilityLogEntry,
   ObservabilityLogSummary,
   PaginatedResponse,
@@ -116,5 +117,29 @@ export function useUpdateSecurityIncident() {
       queryClient.setQueryData(['security-incident', incident.id], incident);
       queryClient.invalidateQueries({ queryKey: ['observability-summary'] });
     },
+  });
+}
+
+
+export interface AuthAuditTimelineFilters {
+  skip?: number;
+  limit?: number;
+  project_id?: number;
+  environment_id?: number;
+  actor_user_id?: string;
+  event_name?: string;
+  subject?: string;
+}
+
+export function useAuthAuditTimeline(filters: AuthAuditTimelineFilters) {
+  return useQuery({
+    queryKey: ['auth-audit-timeline', filters],
+    queryFn: async () => {
+      const response = await apiClient.get<AuthAuditTimelineResponse>('/observability/auth-timeline', {
+        params: filters,
+      });
+      return response.data;
+    },
+    staleTime: 10_000,
   });
 }

@@ -11,10 +11,12 @@ import {
   Sparkles,
 } from 'lucide-react';
 
+import { AuthAuditTimeline } from '@/components/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import {
+  useAuthAuditTimeline,
   useObservabilitySummary,
   useSecurityIncident,
   useSecurityIncidents,
@@ -42,6 +44,10 @@ export default function SecurityReviewPage() {
 
   const summaryQuery = useObservabilitySummary();
   const incidentsQuery = useSecurityIncidents(filters);
+  const timelineQuery = useAuthAuditTimeline({
+    limit: 25,
+    event_name: deferredSearch || undefined,
+  });
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const selectedIncidentQuery = useSecurityIncident(selectedIncidentId);
   const updateIncident = useUpdateSecurityIncident();
@@ -255,6 +261,8 @@ export default function SecurityReviewPage() {
                     </pre>
                   </div>
                 </div>
+
+                <AuthAuditTimeline events={timelineQuery.data?.items ?? []} />
 
                 <div className="space-y-2">
                   <label className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">

@@ -12,7 +12,10 @@ from src.apps.iam.api.deps import get_current_active_superuser, get_db
 from src.apps.iam.models.user import User
 from src.apps.iam.utils.hashid import decode_id_or_404
 from src.apps.observability.models import ObservabilityLogEntry, SecurityIncident
+from src.postbase.domain.models import AuditLog
 from src.apps.observability.schemas import (
+    AuthAuditTimelineEventRead,
+    AuthAuditTimelineResponse,
     ObservabilityLogEntryRead,
     ObservabilityLogSummary,
     SecurityIncidentRead,
@@ -207,3 +210,56 @@ async def update_incident(
     await db.commit()
     await db.refresh(incident)
     return SecurityIncidentRead.model_validate(incident)
+
+
+@router.get("/auth-timeline", response_model=AuthAuditTimelineResponse)
+async def list_auth_timeline(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    project_id: int | None = Query(default=None),
+    environment_id: int | None = Query(default=None),
+    actor_user_id: str | None = Query(default=None),
+    event_name: str | None = Query(default=None),
+    subject: str | None = Query(default=None),
+    current_user: User = Depends(get_current_active_superuser),
+    db: AsyncSession = Depends(get_db),
+) -> AuthAuditTimelineResponse:
+    del current_user
+    query = select(AuditLog).where(AuditLog.action == "auth.timeline")
+    count_query = select(func.count(col(AuditLog.id))).where(AuditLog.action == "auth.timeline")
+
+    if project_id is not None:
+        query = query.where(AuditLog.project_id == project_id)
+        count_query = count_query.where(AuditLog.project_id == project_id)
+    if environment_id is not None:
+        query = query.where(AuditLog.environment_id == environment_id)
+        count_query = count_query.where(AuditLog.environment_id == environment_id)
+    if actor_user_id:
+        uid = decode_id_or_404(actor_user_id)
+        query = query.where(AuditLog.actor_user_id == uid)
+        count_query = count_query.where(AuditLog.actor_user_id == uid)
+    if subject:
+        query = query.where(AuditLog.entity_type == subject)
+        count_query = count_query.where(AuditLog.entity_type == subject)
+
+    rows = (await db.execute(query.order_by(desc(col(AuditLog.created_at))))).scalars().all()
+    if event_name:
+        rows = [r for r in rows if (r.payload_json or {}).get("event_name") == event_name]
+    total = len(rows)
+    rows = rows[skip:skip + limit]
+    items = [
+        AuthAuditTimelineEventRead(
+            id=row.id,
+            created_at=row.created_at,
+            actor_user_id=row.actor_user_id,
+            tenant_id=row.tenant_id,
+            project_id=row.project_id,
+            environment_id=row.environment_id,
+            event_name=(row.payload_json or {}).get("event_name", row.action),
+            subject=(row.payload_json or {}).get("subject", row.entity_type),
+            subject_id=(row.payload_json or {}).get("subject_id", row.entity_id),
+            payload=row.payload_json or {},
+        )
+        for row in rows
+    ]
+    return AuthAuditTimelineResponse(items=items, total=total)

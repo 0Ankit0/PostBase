@@ -281,6 +281,8 @@ class AuthUser(SQLModel, table=True):
     password_hash: str = Field(max_length=255)
     is_active: bool = Field(default=True)
     is_confirmed: bool = Field(default=False)
+    otp_enabled: bool = Field(default=False)
+    otp_secret: str = Field(default="", max_length=128)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

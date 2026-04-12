@@ -52,3 +52,22 @@ export interface SecurityIncidentStatusUpdate {
   status: 'acknowledged' | 'resolved';
   review_notes?: string;
 }
+
+
+export interface AuthAuditTimelineEvent {
+  id: string;
+  created_at: string;
+  actor_user_id?: string | null;
+  tenant_id?: string | null;
+  project_id?: number | null;
+  environment_id?: number | null;
+  event_name: string;
+  subject: string;
+  subject_id: string;
+  payload: Record<string, unknown>;
+}
+
+export interface AuthAuditTimelineResponse {
+  items: AuthAuditTimelineEvent[];
+  total: number;
+}

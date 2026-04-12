@@ -273,3 +273,22 @@ async def check_permission(
 ) -> bool:
     del session
     return await CasbinEnforcer.enforce(str(user_id), resource, action, domain)
+
+
+async def build_environment_authorization_domain(*, project_id: int, environment_id: int) -> str:
+    return f"project:{project_id}:env:{environment_id}"
+
+
+async def check_environment_permission(
+    user_id: int,
+    *,
+    project_id: int,
+    environment_id: int,
+    resource: str,
+    action: str,
+    session: AsyncSession,
+) -> bool:
+    domain = await build_environment_authorization_domain(project_id=project_id, environment_id=environment_id)
+    if await CasbinEnforcer.enforce(str(user_id), resource, action, domain):
+        return True
+    return await CasbinEnforcer.enforce(str(user_id), resource, action, GLOBAL_DOMAIN)

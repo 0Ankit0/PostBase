@@ -72,3 +72,35 @@ async def record_transition_audit_event_once(
         environment_id=environment_id,
         payload=merged_payload,
     )
+
+
+async def record_auth_timeline_event(
+    db: AsyncSession,
+    *,
+    event_name: str,
+    subject: str,
+    subject_id: str,
+    actor_user_id: int | None = None,
+    tenant_id: int | None = None,
+    project_id: int | None = None,
+    environment_id: int | None = None,
+    payload: dict | None = None,
+) -> AuditLog:
+    normalized_payload = {
+        "category": "auth",
+        "event_name": event_name,
+        "subject": subject,
+        "subject_id": subject_id,
+        **(payload or {}),
+    }
+    return await record_audit_event(
+        db,
+        action="auth.timeline",
+        entity_type=subject,
+        entity_id=subject_id,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        environment_id=environment_id,
+        payload=normalized_payload,
+    )
