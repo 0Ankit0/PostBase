@@ -179,17 +179,25 @@ class PayPalService(BasePaymentProvider):
         if not payer_id:
             raise ValueError("PayerID (oid) is required for PayPal verification")
 
-        result = await db.execute(
-            select(PaymentTransaction).where(
-                PaymentTransaction.provider_pidx == payment_id
+        tx: PaymentTransaction | None = None
+        if request.transaction_id is not None:
+            tx = await self._get_transaction(db, request.transaction_id)
+            if tx.provider != PaymentProvider.PAYPAL:
+                raise ValueError("transaction_id does not belong to provider 'paypal'")
+            if tx.provider_pidx != payment_id:
+                raise ValueError("PayPal paymentId does not match the transaction_id record")
+        else:
+            result = await db.execute(
+                select(PaymentTransaction).where(
+                    PaymentTransaction.provider_pidx == payment_id
+                )
             )
-        )
-        tx: PaymentTransaction | None = result.scalars().first()
+            tx = result.scalars().first()
 
         if tx is None:
             raise ValueError(f"No transaction found for PayPal paymentId={payment_id}")
-        if tx.user_id != current_user.id and not current_user.is_superuser:
-            raise PermissionError("Not authorized to verify this transaction")
+        self._assert_transaction_owner(tx, current_user)
+        self._assert_transaction_verifiable(tx)
         if tx.currency != request.currency:
             raise ValueError(
                 f"Currency mismatch for PayPal verification: expected {tx.currency}, got {request.currency}"
@@ -199,6 +207,21 @@ class PayPalService(BasePaymentProvider):
         if not payment.execute({"payer_id": payer_id}):
             error = payment.error or "PayPal execution failed"
             raise ValueError(f"PayPal execution failed: {error}")
+        try:
+            provider_total = payment.transactions[0].amount.total
+            expected_total = f"{tx.amount / 100:.2f}"
+            if provider_total != expected_total:
+                raise ValueError(
+                    f"PayPal amount mismatch: expected {expected_total}, got {provider_total}"
+                )
+            provider_currency = payment.transactions[0].amount.currency
+            if provider_currency.upper() != tx.currency:
+                raise ValueError(
+                    f"PayPal currency mismatch: expected {tx.currency}, got {provider_currency.upper()}"
+                )
+        except (AttributeError, IndexError) as exc:
+            raise ValueError("Unable to validate PayPal transaction amount/currency") from exc
+
         sale_id: str | None = None
         try:
             sale_id = payment.transactions[0].related_resources[0].sale.id

@@ -152,6 +152,36 @@ async def verify_payment(
     - **eSewa**: send ``provider=esewa`` and the base64 ``data`` param from callback.
     """
     provider_svc = _get_provider(request_body.provider)
+    if request_body.transaction_id is not None:
+        tx = await db.get(PaymentTransaction, request_body.transaction_id)
+        if tx is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Transaction {request_body.transaction_id} not found.",
+            )
+        if tx.user_id != current_user.id and not current_user.is_superuser:
+            await analytics.capture(
+                str(current_user.id),
+                PaymentEvents.PAYMENT_ACCESS_DENIED,
+                {
+                    "actor_user_id": current_user.id,
+                    "target_user_id": tx.user_id,
+                    "transaction_id": tx.id,
+                    "reason": "verify_transaction_not_owner",
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to verify this transaction.",
+            )
+        if tx.provider != request_body.provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"transaction_id belongs to provider '{tx.provider.value}', "
+                    f"not '{request_body.provider.value}'."
+                ),
+            )
     try:
         result = await provider_svc.verify_payment(request_body, db, current_user)
         from src.apps.finance.models.payment import PaymentStatus
