@@ -242,7 +242,9 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                 runAction('drain-webhooks', async () => {
                   if (!confirmProductionOperation(isProductionEnvironment, 'webhook_drain')) return;
                   const result = await drainWebhooks.mutateAsync(200);
-                  setLatestOperationSummary(`Webhook drain complete: ${result.drained_count} job(s) drained.`);
+                  setLatestOperationSummary(
+                    `Webhook drain complete: ${result.drained_count} job(s) drained (${result.reason}).`,
+                  );
                 })
               }
               disabled={runningActions['drain-webhooks'] || !selectedEnvironment?.id}
@@ -260,7 +262,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
                   if (!confirmProductionOperation(isProductionEnvironment, 'webhook_recover')) return;
                   const result = await recoverWebhooks.mutateAsync(200);
                   setLatestOperationSummary(
-                    `Webhook recovery complete: ${result.requeued_jobs}/${result.scanned_failed_jobs} exhausted job(s) re-queued.`,
+                    `Webhook recovery complete: ${result.requeued_jobs}/${result.scanned_failed_jobs} exhausted job(s) re-queued, ${result.skipped_jobs} skipped.`,
                   );
                 })
               }
@@ -292,11 +294,26 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
               {runningActions['reconcile-all'] ? 'Running…' : 'Run now'}
             </Button>
           </div>
-          {drainWebhooks.data && <p className="text-xs text-gray-500">Last run drained {drainWebhooks.data.drained_count} job(s).</p>}
-          {recoverWebhooks.data && (
+          {drainWebhooks.data && (
             <p className="text-xs text-gray-500">
-              Last recovery re-queued {recoverWebhooks.data.requeued_jobs} job(s) from {recoverWebhooks.data.scanned_failed_jobs} scanned.
+              Last run drained {drainWebhooks.data.drained_count} job(s), reason: {drainWebhooks.data.reason}.
             </p>
+          )}
+          {recoverWebhooks.data && (
+            <div className="space-y-1 text-xs text-gray-500">
+              <p>
+                Last recovery re-queued {recoverWebhooks.data.requeued_jobs} job(s) from {recoverWebhooks.data.scanned_failed_jobs}{' '}
+                scanned; skipped {recoverWebhooks.data.skipped_jobs}.
+              </p>
+              <p>Re-queued dead-letter IDs: {recoverWebhooks.data.exhausted_job_ids.join(', ') || 'none'}.</p>
+              <p>Skipped dead-letter IDs: {recoverWebhooks.data.skipped_job_ids.join(', ') || 'none'}.</p>
+              <p>
+                Reasons:{' '}
+                {Object.entries(recoverWebhooks.data.reasons)
+                  .map(([reason, count]) => `${reason}=${count}`)
+                  .join(', ')}
+              </p>
+            </div>
           )}
           <OperationStatusSummary
             latestOperationSummary={latestOperationSummary}

@@ -386,7 +386,11 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         headers=owner_headers,
     )
     assert webhook_recover_response.status_code == 200, webhook_recover_response.text
-    assert webhook_recover_response.json()["requeued_jobs"] >= 1
+    recovery_payload = webhook_recover_response.json()
+    assert recovery_payload["requeued_jobs"] >= 1
+    assert "reasons" in recovery_payload
+    assert "requeued" in recovery_payload["reasons"]
+    assert "skipped_jobs" in recovery_payload
 
     namespace_response = await client.post(
         f"/api/v1/environments/{environment_id}/data/namespaces",

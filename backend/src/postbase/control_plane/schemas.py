@@ -330,8 +330,9 @@ class WebhookRecoveryResult(BaseModel):
     scanned_failed_jobs: int
     requeued_jobs: int
     exhausted_job_ids: list[str]
-
-
+    skipped_jobs: int
+    skipped_job_ids: list[str]
+    reasons: dict[str, int]
 
 
 class OperationsChecklistItem(BaseModel):
@@ -342,6 +343,7 @@ class OperationsChecklistItem(BaseModel):
 class WebhookDrainResult(BaseModel):
     triggered: bool
     drained_count: int
+    reason: str
     checklist: list[OperationsChecklistItem]
 
 

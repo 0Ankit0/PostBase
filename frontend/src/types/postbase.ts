@@ -176,6 +176,7 @@ export interface PostBaseOperationsChecklistItem {
 export interface PostBaseWebhookDrainResult {
   triggered: boolean;
   drained_count: number;
+  reason: string;
   checklist: PostBaseOperationsChecklistItem[];
 }
 
@@ -183,6 +184,9 @@ export interface PostBaseWebhookRecoveryResult {
   scanned_failed_jobs: number;
   requeued_jobs: number;
   exhausted_job_ids: string[];
+  skipped_jobs: number;
+  skipped_job_ids: string[];
+  reasons: Record<string, number>;
 }
 
 export interface PostBaseErrorDetail {

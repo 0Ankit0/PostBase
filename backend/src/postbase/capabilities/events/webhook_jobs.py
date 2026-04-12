@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -15,11 +17,25 @@ from src.postbase.domain.models import (
 )
 from src.postbase.platform.usage import record_usage
 
+ACTIVE_JOB_STATUSES = ("pending", "retrying")
+TERMINAL_JOB_STATUSES = ("delivered", "dead_lettered")
+BACKOFF_SCHEDULE_SECONDS = (1, 2, 4, 8, 16, 32, 60)
 
-def _next_attempt_time(attempt_count: int) -> datetime:
-    # Simple bounded exponential backoff in seconds.
-    backoff_seconds = min(60, 2 ** max(0, attempt_count - 1))
-    return datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
+
+@dataclass
+class DeadLetterReplayDiagnostics:
+    scanned_failed_jobs: int
+    requeued_jobs: int
+    exhausted_job_ids: list[int]
+    skipped_jobs: int
+    skipped_job_ids: list[int]
+    reasons: dict[str, int]
+
+
+def _next_attempt_time(attempt_count: int, *, now: datetime) -> datetime:
+    schedule_index = min(max(attempt_count - 1, 0), len(BACKOFF_SCHEDULE_SECONDS) - 1)
+    backoff_seconds = BACKOFF_SCHEDULE_SECONDS[schedule_index]
+    return now + timedelta(seconds=backoff_seconds)
 
 
 async def enqueue_webhook_job(
@@ -53,14 +69,19 @@ async def process_due_webhook_jobs(
     *,
     channel_id: int | None = None,
     limit: int = 50,
+    job_ids: list[int] | None = None,
 ) -> list[DeliveryRecord]:
     now = datetime.now(timezone.utc)
     filters = [
-        WebhookDeliveryJob.status.in_(["pending", "retrying"]),
+        WebhookDeliveryJob.status.in_(ACTIVE_JOB_STATUSES),
         WebhookDeliveryJob.next_attempt_at <= now,
     ]
     if channel_id is not None:
         filters.append(WebhookDeliveryJob.channel_id == channel_id)
+    if job_ids is not None:
+        if not job_ids:
+            return []
+        filters.append(WebhookDeliveryJob.id.in_(job_ids))
 
     jobs = (
         await db.execute(
@@ -78,6 +99,41 @@ async def process_due_webhook_jobs(
     for job in jobs:
         if batch_failures >= settings.POSTBASE_WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD:
             break
+
+        if job.status in TERMINAL_JOB_STATUSES:
+            continue
+
+        if job.attempt_count >= job.max_attempts:
+            batch_failures += 1
+            job.status = "dead_lettered"
+            job.next_attempt_at = None
+            job.error_text = "webhook delivery retry budget exhausted"
+            job.updated_at = now
+            if (
+                await db.execute(
+                    select(DeadLetterWebhookDelivery).where(
+                        DeadLetterWebhookDelivery.webhook_delivery_job_id == job.id
+                    )
+                )
+            ).scalars().first() is None:
+                db.add(
+                    DeadLetterWebhookDelivery(
+                        webhook_delivery_job_id=job.id,
+                        channel_id=job.channel_id,
+                        subscription_id=job.subscription_id,
+                        event_name=job.event_name,
+                        payload_json=job.payload_json,
+                        target_ref=job.target_ref,
+                        attempt_count=job.attempt_count,
+                        max_attempts=job.max_attempts,
+                        latest_response_code=job.latest_response_code,
+                        latest_latency_ms=job.latest_latency_ms,
+                        error_text=job.error_text,
+                        attempt_history_json=job.attempt_history_json,
+                    )
+                )
+            continue
+
         result = await deliver_webhook(
             target_ref=job.target_ref,
             event_name=job.event_name,
@@ -124,22 +180,29 @@ async def process_due_webhook_jobs(
             batch_failures += 1
             job.status = "dead_lettered"
             job.next_attempt_at = None
-            db.add(
-                DeadLetterWebhookDelivery(
-                    webhook_delivery_job_id=job.id,
-                    channel_id=job.channel_id,
-                    subscription_id=job.subscription_id,
-                    event_name=job.event_name,
-                    payload_json=job.payload_json,
-                    target_ref=job.target_ref,
-                    attempt_count=job.attempt_count,
-                    max_attempts=job.max_attempts,
-                    latest_response_code=job.latest_response_code,
-                    latest_latency_ms=job.latest_latency_ms,
-                    error_text=result.error_text or "webhook delivery failed after retries",
-                    attempt_history_json=job.attempt_history_json,
+            if (
+                await db.execute(
+                    select(DeadLetterWebhookDelivery).where(
+                        DeadLetterWebhookDelivery.webhook_delivery_job_id == job.id
+                    )
                 )
-            )
+            ).scalars().first() is None:
+                db.add(
+                    DeadLetterWebhookDelivery(
+                        webhook_delivery_job_id=job.id,
+                        channel_id=job.channel_id,
+                        subscription_id=job.subscription_id,
+                        event_name=job.event_name,
+                        payload_json=job.payload_json,
+                        target_ref=job.target_ref,
+                        attempt_count=job.attempt_count,
+                        max_attempts=job.max_attempts,
+                        latest_response_code=job.latest_response_code,
+                        latest_latency_ms=job.latest_latency_ms,
+                        error_text=result.error_text or "webhook delivery failed after retries",
+                        attempt_history_json=job.attempt_history_json,
+                    )
+                )
             delivery_status = "failed"
             delivered_at = None
             error_text = result.error_text or "webhook delivery failed after retries"
@@ -152,7 +215,7 @@ async def process_due_webhook_jobs(
         else:
             batch_failures += 1
             job.status = "retrying"
-            job.next_attempt_at = _next_attempt_time(job.attempt_count)
+            job.next_attempt_at = _next_attempt_time(job.attempt_count, now=now)
             delivery_status = "retrying"
             delivered_at = None
             error_text = result.error_text or "webhook delivery retry scheduled"
@@ -193,7 +256,7 @@ async def replay_dead_letter_webhook_jobs(
     db: AsyncSession,
     *,
     limit: int = 200,
-) -> list[DeadLetterWebhookDelivery]:
+) -> DeadLetterReplayDiagnostics:
     dead_letters = (
         await db.execute(
             select(DeadLetterWebhookDelivery)
@@ -203,18 +266,58 @@ async def replay_dead_letter_webhook_jobs(
         )
     ).scalars().all()
     now = datetime.now(timezone.utc)
+    requeued_dead_letters: list[int] = []
+    skipped_dead_letters: list[int] = []
+    reasons: dict[str, int] = {
+        "requeued": 0,
+        "already_replayed": 0,
+        "job_missing": 0,
+        "job_not_dead_lettered": 0,
+    }
+
     for dead_letter in dead_letters:
+        if dead_letter.id is None:
+            continue
+
+        mark_replayed_result = await db.execute(
+            update(DeadLetterWebhookDelivery)
+            .where(
+                DeadLetterWebhookDelivery.id == dead_letter.id,
+                DeadLetterWebhookDelivery.dead_letter_state == "active",
+            )
+            .values(dead_letter_state="replayed", replayed_at=now)
+        )
+        if mark_replayed_result.rowcount != 1:
+            skipped_dead_letters.append(dead_letter.id)
+            reasons["already_replayed"] += 1
+            continue
+
         job = await db.get(WebhookDeliveryJob, dead_letter.webhook_delivery_job_id)
         if job is None:
+            skipped_dead_letters.append(dead_letter.id)
+            reasons["job_missing"] += 1
             continue
+        if job.status != "dead_lettered":
+            skipped_dead_letters.append(dead_letter.id)
+            reasons["job_not_dead_lettered"] += 1
+            continue
+
         job.status = "retrying"
         job.next_attempt_at = now
         job.error_text = "operator initiated replay from dead-letter queue"
         job.updated_at = now
-        dead_letter.dead_letter_state = "replayed"
-        dead_letter.replayed_at = now
+        requeued_dead_letters.append(dead_letter.id)
+        reasons["requeued"] += 1
+
     await db.flush()
-    return dead_letters
+    return DeadLetterReplayDiagnostics(
+        scanned_failed_jobs=len(dead_letters),
+        requeued_jobs=len(requeued_dead_letters),
+        exhausted_job_ids=requeued_dead_letters,
+        skipped_jobs=len(skipped_dead_letters),
+        skipped_job_ids=skipped_dead_letters,
+        reasons=reasons,
+    )
 
 
 async def _record_queue_health_signals(db: AsyncSession, *, channel_id: int | None) -> None:

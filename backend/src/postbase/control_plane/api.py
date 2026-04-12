@@ -1176,7 +1176,7 @@ async def drain_environment_webhooks(
         current_user=current_user,
         action="webhook_drain",
     )
-    drained_count = await drain_due_webhook_jobs(limit=limit)
+    drained_count = await drain_due_webhook_jobs(limit=limit, environment_id=environment.id)
     await record_audit_event(
         db,
         action="webhook.drain_triggered",
@@ -1186,12 +1186,18 @@ async def drain_environment_webhooks(
         tenant_id=project.tenant_id,
         project_id=project.id,
         environment_id=environment.id,
-        payload={"limit": limit, "drained_count": drained_count, "outcome": "allowed"},
+        payload={
+            "limit": limit,
+            "drained_count": drained_count,
+            "reason": "drained" if drained_count else "no_due_jobs",
+            "outcome": "allowed",
+        },
     )
     await db.commit()
     return WebhookDrainResult(
         triggered=True,
         drained_count=drained_count,
+        reason="drained" if drained_count else "no_due_jobs",
         checklist=[
             {"item": "Durable webhook queue worker task registered", "completed": True},
             {"item": "Scheduled drain job configured", "completed": True},
@@ -1214,7 +1220,7 @@ async def recover_exhausted_webhooks(
         current_user=current_user,
         action="webhook_recover",
     )
-    dead_letters = await replay_dead_letter_webhook_jobs(db, limit=limit)
+    recovery = await replay_dead_letter_webhook_jobs(db, limit=limit)
     await record_audit_event(
         db,
         action="webhook.recover_triggered",
@@ -1224,13 +1230,23 @@ async def recover_exhausted_webhooks(
         tenant_id=project.tenant_id,
         project_id=project.id,
         environment_id=environment.id,
-        payload={"limit": limit, "requeued_jobs": len(dead_letters), "outcome": "allowed"},
+        payload={
+            "limit": limit,
+            "requeued_jobs": recovery.requeued_jobs,
+            "scanned_failed_jobs": recovery.scanned_failed_jobs,
+            "skipped_jobs": recovery.skipped_jobs,
+            "reasons": recovery.reasons,
+            "outcome": "allowed",
+        },
     )
     await db.commit()
     return WebhookRecoveryResult(
-        scanned_failed_jobs=len(dead_letters),
-        requeued_jobs=len(dead_letters),
-        exhausted_job_ids=[encode_id(item.id) for item in dead_letters if item.id is not None],
+        scanned_failed_jobs=recovery.scanned_failed_jobs,
+        requeued_jobs=recovery.requeued_jobs,
+        exhausted_job_ids=[encode_id(item_id) for item_id in recovery.exhausted_job_ids],
+        skipped_jobs=recovery.skipped_jobs,
+        skipped_job_ids=[encode_id(item_id) for item_id in recovery.skipped_job_ids],
+        reasons=recovery.reasons,
     )
 
 @router.post("/environments/{environment_id}/data/namespaces", response_model=NamespaceRead, status_code=status.HTTP_201_CREATED)
