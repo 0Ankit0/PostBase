@@ -2,33 +2,34 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import EmailStr, Field
 
+from src.postbase.capabilities.contracts import PostBaseContractModel
 from src.postbase.platform.contracts import ProviderAdapter
 
 
-class AuthSignupRequest(BaseModel):
+class AuthSignupRequest(PostBaseContractModel):
     username: str
     email: EmailStr
     password: str
 
 
-class AuthLoginRequest(BaseModel):
+class AuthLoginRequest(PostBaseContractModel):
     email: EmailStr
     password: str
 
 
-class AuthRefreshRequest(BaseModel):
+class AuthRefreshRequest(PostBaseContractModel):
     refresh_token: str = Field(min_length=1)
 
 
-class AuthTokens(BaseModel):
+class AuthTokens(PostBaseContractModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
 
 
-class AuthCurrentUser(BaseModel):
+class AuthCurrentUser(PostBaseContractModel):
     id: int
     project_id: int
     environment_id: int
@@ -37,7 +38,7 @@ class AuthCurrentUser(BaseModel):
     is_active: bool
 
 
-class AuthSessionResponse(BaseModel):
+class AuthSessionResponse(PostBaseContractModel):
     user: AuthCurrentUser
     tokens: AuthTokens
 

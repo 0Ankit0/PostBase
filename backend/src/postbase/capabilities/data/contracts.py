@@ -2,17 +2,18 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from src.apps.core.schemas import PaginatedResponse
+from src.postbase.capabilities.contracts import PostBaseContractModel
 from src.postbase.platform.contracts import ProviderAdapter
 
 
-class DataMutationPayload(BaseModel):
+class DataMutationPayload(PostBaseContractModel):
     values: dict[str, Any] = Field(default_factory=dict)
 
 
-class DataQueryRequest(BaseModel):
+class DataQueryRequest(PostBaseContractModel):
     namespace: str
     table: str
     filters: dict[str, Any] = Field(default_factory=dict)
@@ -22,11 +23,11 @@ class DataQueryRequest(BaseModel):
     order_direction: str = "asc"
 
 
-class DataQueryResult(BaseModel):
+class DataQueryResult(PostBaseContractModel):
     rows: list[dict[str, Any]]
 
 
-class DataMutationResult(BaseModel):
+class DataMutationResult(PostBaseContractModel):
     success: bool
     row_id: int | None = None
     values: dict[str, Any] = Field(default_factory=dict)

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Header, Query
 
 from src.apps.core.schemas import PaginatedResponse
-from src.postbase.capabilities.contracts import FacadeStatusResponse
+from src.postbase.capabilities.contracts import CAPABILITY_ERROR_RESPONSES, FacadeStatusResponse
 from src.postbase.capabilities.functions.contracts import (
     ExecutionRead,
     FunctionCreateRequest,
@@ -14,7 +14,7 @@ from src.postbase.capabilities.functions.service import FunctionsFacade
 router = APIRouter(prefix="/functions", tags=["postbase-functions"])
 
 
-@router.post("", response_model=FunctionRead)
+@router.post("", response_model=FunctionRead, responses=CAPABILITY_ERROR_RESPONSES)
 async def create_function(
     payload: FunctionCreateRequest,
     context=Depends(get_access_context),
@@ -23,7 +23,7 @@ async def create_function(
     return await provider.create_function(context, payload)
 
 
-@router.get("", response_model=PaginatedResponse[FunctionRead])
+@router.get("", response_model=PaginatedResponse[FunctionRead], responses=CAPABILITY_ERROR_RESPONSES)
 async def list_functions(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=25, ge=1, le=100),
@@ -33,7 +33,7 @@ async def list_functions(
     return await provider.list_functions(context, skip=skip, limit=limit)
 
 
-@router.post("/{function_id}/invoke", response_model=ExecutionRead)
+@router.post("/{function_id}/invoke", response_model=ExecutionRead, responses=CAPABILITY_ERROR_RESPONSES)
 async def invoke_function(
     function_id: int,
     payload: FunctionInvokeRequest,
@@ -53,7 +53,7 @@ async def invoke_function(
     )
 
 
-@router.get("/{function_id}/executions", response_model=PaginatedResponse[ExecutionRead])
+@router.get("/{function_id}/executions", response_model=PaginatedResponse[ExecutionRead], responses=CAPABILITY_ERROR_RESPONSES)
 async def list_executions(
     function_id: int,
     skip: int = Query(default=0, ge=0),
@@ -64,7 +64,7 @@ async def list_executions(
     return await provider.list_executions(context, function_id, skip=skip, limit=limit)
 
 
-@router.get("/status", response_model=FacadeStatusResponse)
+@router.get("/status", response_model=FacadeStatusResponse, responses=CAPABILITY_ERROR_RESPONSES)
 async def functions_status(
     context=Depends(get_access_context),
     facade: FunctionsFacade = Depends(get_functions_facade),

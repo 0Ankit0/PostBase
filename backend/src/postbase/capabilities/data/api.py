@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 
 from src.apps.core.schemas import PaginatedResponse
-from src.postbase.capabilities.contracts import FacadeStatusResponse
+from src.postbase.capabilities.contracts import CAPABILITY_ERROR_RESPONSES, FacadeStatusResponse
 from src.postbase.capabilities.data.contracts import DataMutationPayload, DataMutationResult, DataQueryRequest, DataQueryResult
 from src.postbase.capabilities.data.dependencies import get_access_context, get_data_facade, get_data_provider
 from src.postbase.capabilities.data.service import DataFacade
@@ -13,7 +13,7 @@ from src.postbase.capabilities.data.service import DataFacade
 router = APIRouter(prefix="/data", tags=["postbase-data"])
 
 
-@router.post("/query", response_model=DataQueryResult)
+@router.post("/query", response_model=DataQueryResult, responses=CAPABILITY_ERROR_RESPONSES)
 async def query_rows(
     payload: DataQueryRequest,
     context=Depends(get_access_context),
@@ -22,7 +22,7 @@ async def query_rows(
     return await provider.query_rows(context, payload)
 
 
-@router.get("/{namespace}/{table}", response_model=PaginatedResponse[dict[str, Any]])
+@router.get("/{namespace}/{table}", response_model=PaginatedResponse[dict[str, Any]], responses=CAPABILITY_ERROR_RESPONSES)
 async def list_rows(
     namespace: str,
     table: str,
@@ -34,7 +34,7 @@ async def list_rows(
     return await provider.list_rows(context, namespace, table, skip=skip, limit=limit)
 
 
-@router.post("/{namespace}/{table}", response_model=DataMutationResult)
+@router.post("/{namespace}/{table}", response_model=DataMutationResult, responses=CAPABILITY_ERROR_RESPONSES)
 async def create_row(
     namespace: str,
     table: str,
@@ -45,7 +45,7 @@ async def create_row(
     return await provider.create_row(context, namespace, table, payload)
 
 
-@router.patch("/{namespace}/{table}/{row_id}", response_model=DataMutationResult)
+@router.patch("/{namespace}/{table}/{row_id}", response_model=DataMutationResult, responses=CAPABILITY_ERROR_RESPONSES)
 async def update_row(
     namespace: str,
     table: str,
@@ -57,7 +57,7 @@ async def update_row(
     return await provider.update_row(context, namespace, table, row_id, payload)
 
 
-@router.delete("/{namespace}/{table}/{row_id}", status_code=204)
+@router.delete("/{namespace}/{table}/{row_id}", status_code=204, responses=CAPABILITY_ERROR_RESPONSES)
 async def delete_row(
     namespace: str,
     table: str,
@@ -68,7 +68,7 @@ async def delete_row(
     await provider.delete_row(context, namespace, table, row_id)
 
 
-@router.get("/status", response_model=FacadeStatusResponse)
+@router.get("/status", response_model=FacadeStatusResponse, responses=CAPABILITY_ERROR_RESPONSES)
 async def data_status(
     context=Depends(get_access_context),
     facade: DataFacade = Depends(get_data_facade),
