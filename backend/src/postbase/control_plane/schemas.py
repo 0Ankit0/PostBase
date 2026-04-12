@@ -362,6 +362,12 @@ class EnvironmentOverviewRead(BaseModel):
     key_count: int
     usage_points_total: float
     recent_audit_events: int
+    quota_state: str
+    quota_warning_triggered: bool
+    quota_soft_limited: bool
+    quota_hard_limited: bool
+    quota_utilization: float
+    degradation_mode: str
 
 
 class ProjectOverviewRead(BaseModel):
@@ -374,3 +380,19 @@ class ProjectOverviewRead(BaseModel):
     usage_points_total: float
     recent_audit_events: int
     environments: list[EnvironmentOverviewRead]
+
+
+class AuditExportRead(BaseModel):
+    export_format: str
+    total: int
+    data: str
+
+
+class ComplianceEvidenceBundleRead(BaseModel):
+    scope: str
+    export_format: str
+    record_count: int
+    generated_at: str
+    hash_sha256: str
+    signature_hmac_sha256: str
+    data: str

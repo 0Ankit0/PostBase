@@ -142,6 +142,74 @@ def _assert_migration_state_invariants(migration: SchemaMigration) -> None:
         raise RuntimeError("migration invariant violated: failed migration must be drifted")
 
 
+def evaluate_quota_state(
+    *,
+    usage_total: float,
+    warning_threshold: float,
+    soft_limit: float,
+    hard_limit: float,
+) -> dict[str, object]:
+    warning_triggered = usage_total >= warning_threshold
+    soft_limited = usage_total >= soft_limit
+    hard_limited = usage_total >= hard_limit
+    utilization = 0.0 if hard_limit <= 0 else min(usage_total / hard_limit, 1.0)
+    if hard_limited:
+        state = "hard_limited"
+        degradation_mode = "blocked"
+    elif soft_limited:
+        state = "soft_limited"
+        degradation_mode = "controlled"
+    elif warning_triggered:
+        state = "warning"
+        degradation_mode = "none"
+    else:
+        state = "healthy"
+        degradation_mode = "none"
+    return {
+        "quota_state": state,
+        "quota_warning_triggered": warning_triggered,
+        "quota_soft_limited": soft_limited,
+        "quota_hard_limited": hard_limited,
+        "quota_utilization": round(utilization, 4),
+        "degradation_mode": degradation_mode,
+    }
+
+
+def quota_thresholds_from_environment(environment: Environment) -> tuple[float, float, float]:
+    quota_config = (environment.env_policy_json or {}).get("quota", {})
+    warning_threshold = float(quota_config.get("warning_threshold", 750.0))
+    soft_limit = float(quota_config.get("soft_limit", 1000.0))
+    hard_limit = float(quota_config.get("hard_limit", 1200.0))
+    return warning_threshold, soft_limit, hard_limit
+
+
+def enforce_quota_lifecycle(
+    *,
+    usage_total: float,
+    warning_threshold: float,
+    soft_limit: float,
+    hard_limit: float,
+    action: str,
+) -> None:
+    state = evaluate_quota_state(
+        usage_total=usage_total,
+        warning_threshold=warning_threshold,
+        soft_limit=soft_limit,
+        hard_limit=hard_limit,
+    )
+    if state["quota_hard_limited"]:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": "quota_hard_limit_enforced", "message": "hard limit reached", "action": action},
+        )
+    controlled_actions = {"webhook_drain", "webhook_recover", "migrations"}
+    if state["quota_soft_limited"] and action not in controlled_actions:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": "quota_soft_limit_controlled_degradation", "message": "soft limit reached", "action": action},
+        )
+
+
 def build_idempotency_endpoint_fingerprint(*, method: str, path: str) -> str:
     return f"{method.upper()}:{path}"
 
@@ -1923,6 +1991,13 @@ async def build_project_overview(
             for item in migrations
             if item.environment_id == environment.id and item.reconciliation_status == "drifted"
         )
+        warning_threshold, soft_limit, hard_limit = quota_thresholds_from_environment(environment)
+        quota_state = evaluate_quota_state(
+            usage_total=environment_usage,
+            warning_threshold=warning_threshold,
+            soft_limit=soft_limit,
+            hard_limit=hard_limit,
+        )
         environment_health = health_by_environment[environment.id]
         environment_rows.append(
             {
@@ -1940,6 +2015,7 @@ async def build_project_overview(
                 "key_count": environment_key_count,
                 "usage_points_total": environment_usage,
                 "recent_audit_events": environment_audit_count,
+                **quota_state,
             }
         )
 
