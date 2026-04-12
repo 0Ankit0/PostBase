@@ -47,6 +47,7 @@ async def enqueue_webhook_job(
     payload_json: dict,
     target_ref: str,
     max_attempts: int = 3,
+    signing_secrets: list[str] | None = None,
 ) -> WebhookDeliveryJob:
     bounded_attempts = max(1, min(max_attempts, settings.POSTBASE_WEBHOOK_RETRY_CEILING))
     job = WebhookDeliveryJob(
@@ -58,6 +59,7 @@ async def enqueue_webhook_job(
         status="pending",
         max_attempts=bounded_attempts,
         next_attempt_at=datetime.now(timezone.utc),
+        signing_secrets_json=list(signing_secrets or []),
     )
     db.add(job)
     await db.flush()
@@ -140,6 +142,7 @@ async def process_due_webhook_jobs(
             payload=job.payload_json,
             attempt_number=job.attempt_count + 1,
             timeout_ms=settings.POSTBASE_WEBHOOK_TIMEOUT_MS,
+            signing_secrets=job.signing_secrets_json,
         )
         job.attempt_count += 1
         job.error_text = result.error_text

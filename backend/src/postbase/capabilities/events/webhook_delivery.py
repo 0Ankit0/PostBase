@@ -19,6 +19,7 @@ async def deliver_webhook(
     payload: dict,
     attempt_number: int,
     timeout_ms: int = 5_000,
+    signing_secrets: list[str] | None = None,
 ) -> WebhookDeliveryResult:
     """Best-effort webhook deliverer abstraction.
 
@@ -29,6 +30,17 @@ async def deliver_webhook(
 
     start = perf_counter()
     _ = (event_name, payload, timeout_ms)
+
+    if "require-secret:" in target_ref:
+        expected = target_ref.split("require-secret:", 1)[1].strip()
+        if not expected or expected not in (signing_secrets or []):
+            latency_ms = int((perf_counter() - start) * 1000)
+            return WebhookDeliveryResult(
+                status="failed",
+                response_code=401,
+                latency_ms=latency_ms,
+                error_text="webhook signature rejected",
+            )
 
     if "auth-fail" in target_ref:
         latency_ms = int((perf_counter() - start) * 1000)

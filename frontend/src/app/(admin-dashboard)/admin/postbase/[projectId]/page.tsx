@@ -31,6 +31,11 @@ import {
   useRetryPostBaseMigration,
   useRotatePostBaseSecret,
   useUpdatePostBaseBindingStatus,
+  usePostBaseChannels,
+  usePostBaseChannelPolicyTemplates,
+  usePostBaseUpdateChannel,
+  usePostBaseWebhookEndpoints,
+  usePostBaseRotateWebhookEndpointSecret,
 } from '@/hooks';
 import type { PostBaseBindingRead, PostBaseEnvironmentRead, PostBaseProviderCatalogRead, PostBaseSecretRead } from '@/types';
 
@@ -77,6 +82,11 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
 
   const healthQuery = usePostBaseCapabilityHealth(selectedEnvironment?.id);
   const { data: health } = healthQuery;
+  const { data: channelTemplates } = usePostBaseChannelPolicyTemplates();
+  const channelsQuery = usePostBaseChannels(selectedEnvironment?.id);
+  const webhookEndpointsQuery = usePostBaseWebhookEndpoints(selectedEnvironment?.id);
+  const updateChannelPolicy = usePostBaseUpdateChannel();
+  const rotateEndpointSecret = usePostBaseRotateWebhookEndpointSecret();
   const selectedFunctionId = searchParams.get('functionId') ?? undefined;
   const { data: functionSchedules } = usePostBaseFunctionSchedules(selectedFunctionId);
   const { data: functionDeployments } = usePostBaseFunctionDeployments(selectedFunctionId);
@@ -338,6 +348,68 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
           <MutationError mutationError={reconcileMigration.error} />
         </CardContent>
       </Card>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Channel permissions</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {(channelsQuery.data?.items ?? []).map((channel) => (
+              <div key={channel.id} className="rounded border border-gray-200 p-2">
+                <p className="font-medium text-gray-900">{channel.channel_key}</p>
+                <p className="text-xs text-gray-500">{channel.description || 'No description'}</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <select
+                    className="rounded border border-gray-300 px-2 py-1 text-xs"
+                    defaultValue=""
+                    onChange={(event) => {
+                      const template = event.target.value;
+                      if (!template) return;
+                      void updateChannelPolicy.mutateAsync({ channelId: channel.id, policy_template: template });
+                    }}
+                  >
+                    <option value="">Apply template…</option>
+                    {(channelTemplates ?? []).map((template) => (
+                      <option key={template.template_key} value={template.template_key}>{template.template_key}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs text-gray-500">
+                    ops: {((channel.policy_json?.allowed_operations as string[] | undefined) ?? []).join(', ') || 'none'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Webhook endpoints</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {(webhookEndpointsQuery.data?.items ?? []).map((endpoint) => (
+              <div key={endpoint.id} className="rounded border border-gray-200 p-2">
+                <p className="font-medium text-gray-900">subscription #{endpoint.id}</p>
+                <p className="text-xs text-gray-500 break-all">{endpoint.target_ref}</p>
+                <p className="text-xs text-gray-500">dual-secret grace: {endpoint.has_previous_secret ? 'active' : 'none'}</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2"
+                  onClick={() => {
+                    const secret = window.prompt('Enter new webhook secret');
+                    if (!secret) return;
+                    void rotateEndpointSecret.mutateAsync({ subscriptionId: endpoint.id, new_secret: secret, grace_window_seconds: 300 });
+                  }}
+                >
+                  Rotate secret
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>

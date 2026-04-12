@@ -200,3 +200,23 @@ export function useRemoveNotificationDevice() {
     },
   });
 }
+
+
+export function useNotificationChannelPermissions() {
+  return useQuery({
+    queryKey: ['notifications', 'channel-permissions'],
+    queryFn: async () => {
+      const response = await apiClient.get<{ items: Array<{ channel_key: string; policy_json: Record<string, unknown> }> }>('/events/channels', {
+        params: { skip: 0, limit: 100 },
+      });
+      const allowedChannels = response.data.items
+        .filter((item) => {
+          const operations = (item.policy_json?.allowed_operations as string[] | undefined) ?? [];
+          return operations.includes('consume');
+        })
+        .map((item) => item.channel_key);
+      return { allowedChannels };
+    },
+    staleTime: 30_000,
+  });
+}

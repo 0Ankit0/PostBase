@@ -279,3 +279,26 @@ export interface PostBaseEventDeliveryRead {
   error_text: string;
   payload_json: Record<string, unknown>;
 }
+
+export interface PostBaseChannelRead {
+  id: number;
+  channel_key: string;
+  description: string;
+  policy_json: Record<string, unknown>;
+}
+
+export interface PostBaseChannelPolicyTemplateRead {
+  template_key: string;
+  description: string;
+  policy_json: Record<string, unknown>;
+}
+
+export interface PostBaseWebhookEndpointRead {
+  id: number;
+  channel_id: number;
+  target_ref: string;
+  is_active: boolean;
+  has_active_secret: boolean;
+  has_previous_secret: boolean;
+  previous_secret_expires_at: string | null;
+}
