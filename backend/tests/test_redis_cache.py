@@ -4,6 +4,9 @@ Run with: pytest tests/test_redis_cache.py -v
 """
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from src.apps.core.cache import RedisCache
 from src.apps.core.dependencies import get_redis_cache, use_cache
 
@@ -160,11 +163,44 @@ class TestRedisCacheMocked:
         monkeypatch.setattr("src.apps.core.config.settings.DEBUG", False)
         
         mock_redis = AsyncMock()
-        mock_redis.get.side_effect = Exception("Connection error")
+        mock_redis.get.side_effect = RedisConnectionError("Connection error")
         
         with patch.object(RedisCache, 'get_client', return_value=mock_redis):
             result = await RedisCache.get("test_key")
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_cache_retries_transient_timeout(self, monkeypatch):
+        """Transient timeout should retry and eventually succeed."""
+        monkeypatch.setattr("src.apps.core.config.settings.DEBUG", False)
+
+        mock_redis = AsyncMock()
+        mock_redis.exists.side_effect = [RedisTimeoutError("timeout"), 1]
+
+        with patch.object(RedisCache, "get_client", return_value=mock_redis):
+            result = await RedisCache.exists("user:1")
+            assert result is True
+            assert mock_redis.exists.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cache_logs_metric_for_failure(self, monkeypatch):
+        """Cache failures should emit observability metrics."""
+        monkeypatch.setattr("src.apps.core.config.settings.DEBUG", False)
+
+        mock_redis = AsyncMock()
+        mock_redis.delete.side_effect = RedisConnectionError("down")
+
+        with (
+            patch.object(RedisCache, "get_client", return_value=mock_redis),
+            patch("src.apps.core.cache.record_cache_metric") as record_metric,
+        ):
+            result = await RedisCache.delete("users:123")
+            assert result is False
+            assert record_metric.call_count >= 1
+            failure_call = record_metric.call_args_list[-1].kwargs
+            assert failure_call["operation"] == "delete"
+            assert failure_call["namespace"] == "users"
+            assert failure_call["outcome"] == "failure"
     
     @pytest.mark.asyncio
     async def test_cache_close(self):
