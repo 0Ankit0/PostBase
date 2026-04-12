@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from src.apps.core.schemas import PaginatedResponse
+from src.postbase.capabilities.contracts import PostBaseContractModel
 from src.postbase.platform.contracts import ProviderAdapter
 
 
-class StorageUploadRequest(BaseModel):
+class StorageUploadRequest(PostBaseContractModel):
     filename: str
     content_base64: str
     content_type: str = "application/octet-stream"
@@ -17,7 +18,7 @@ class StorageUploadRequest(BaseModel):
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 
-class StorageFileResponse(BaseModel):
+class StorageFileResponse(PostBaseContractModel):
     id: int
     bucket_key: str
     path: str
@@ -28,7 +29,7 @@ class StorageFileResponse(BaseModel):
     metadata_json: dict[str, Any]
 
 
-class SignedUrlResponse(BaseModel):
+class SignedUrlResponse(PostBaseContractModel):
     file_id: int
     url: str
 

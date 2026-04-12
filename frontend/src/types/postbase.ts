@@ -184,3 +184,57 @@ export interface PostBaseWebhookRecoveryResult {
   requeued_jobs: number;
   exhausted_job_ids: string[];
 }
+
+export interface PostBaseErrorDetail {
+  field?: string | null;
+  message: string;
+  context?: Record<string, unknown> | null;
+}
+
+export interface PostBaseErrorEnvelope {
+  code: string;
+  message: string;
+  details: PostBaseErrorDetail[];
+}
+
+export interface PostBaseErrorResponse {
+  error: PostBaseErrorEnvelope;
+}
+
+export interface PostBaseCapabilityStatusResponse {
+  status: 'ready' | 'degraded' | 'error';
+  reason: string;
+  provider_key: string | null;
+}
+
+export interface PostBaseFunctionExecutionRead {
+  id: number;
+  function_definition_id: number;
+  invocation_type: string;
+  idempotency_key: string | null;
+  correlation_id: string;
+  replay_of_execution_id: number | null;
+  retry_of_execution_id: number | null;
+  retry_count: number;
+  timeout_ms: number | null;
+  cancel_requested: boolean;
+  status: string;
+  input_json: Record<string, unknown>;
+  output_json: Record<string, unknown>;
+  error_text: string;
+  started_at: string;
+  completed_at: string | null;
+  log_excerpt: string;
+}
+
+export interface PostBaseEventDeliveryRead {
+  id: number;
+  channel_id: number;
+  subscription_id: number | null;
+  event_name: string;
+  status: string;
+  attempt_count: number;
+  delivered_at: string | null;
+  error_text: string;
+  payload_json: Record<string, unknown>;
+}

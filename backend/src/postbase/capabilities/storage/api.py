@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 
 from src.apps.core.schemas import PaginatedResponse
-from src.postbase.capabilities.contracts import FacadeStatusResponse
+from src.postbase.capabilities.contracts import CAPABILITY_ERROR_RESPONSES, FacadeStatusResponse
 from src.postbase.capabilities.storage.contracts import SignedUrlResponse, StorageFileResponse, StorageUploadRequest
 from src.postbase.capabilities.storage.dependencies import get_access_context, get_storage_facade, get_storage_provider
 from src.postbase.capabilities.storage.service import StorageFacade
@@ -9,7 +9,7 @@ from src.postbase.capabilities.storage.service import StorageFacade
 router = APIRouter(prefix="/storage", tags=["postbase-storage"])
 
 
-@router.post("/files", response_model=StorageFileResponse)
+@router.post("/files", response_model=StorageFileResponse, responses=CAPABILITY_ERROR_RESPONSES)
 async def upload_file(
     payload: StorageUploadRequest,
     context=Depends(get_access_context),
@@ -18,7 +18,7 @@ async def upload_file(
     return await provider.upload_file(context, payload)
 
 
-@router.get("/files", response_model=PaginatedResponse[StorageFileResponse])
+@router.get("/files", response_model=PaginatedResponse[StorageFileResponse], responses=CAPABILITY_ERROR_RESPONSES)
 async def list_files(
     bucket_key: str | None = None,
     skip: int = Query(default=0, ge=0),
@@ -29,7 +29,7 @@ async def list_files(
     return await provider.list_files(context, bucket_key, skip=skip, limit=limit)
 
 
-@router.get("/files/{file_id}/signed-url", response_model=SignedUrlResponse)
+@router.get("/files/{file_id}/signed-url", response_model=SignedUrlResponse, responses=CAPABILITY_ERROR_RESPONSES)
 async def get_signed_url(
     file_id: int,
     context=Depends(get_access_context),
@@ -38,7 +38,7 @@ async def get_signed_url(
     return await provider.signed_url(context, file_id)
 
 
-@router.delete("/files/{file_id}", status_code=204)
+@router.delete("/files/{file_id}", status_code=204, responses=CAPABILITY_ERROR_RESPONSES)
 async def delete_file(
     file_id: int,
     context=Depends(get_access_context),
@@ -47,7 +47,7 @@ async def delete_file(
     await provider.delete_file(context, file_id)
 
 
-@router.get("/status", response_model=FacadeStatusResponse)
+@router.get("/status", response_model=FacadeStatusResponse, responses=CAPABILITY_ERROR_RESPONSES)
 async def storage_status(
     context=Depends(get_access_context),
     facade: StorageFacade = Depends(get_storage_facade),

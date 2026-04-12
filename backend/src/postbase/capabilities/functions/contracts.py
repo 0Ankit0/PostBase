@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from src.apps.core.schemas import PaginatedResponse
+from src.postbase.capabilities.contracts import ISODateTime, PostBaseContractModel
 from src.postbase.platform.contracts import ProviderAdapter
 
 
-class FunctionCreateRequest(BaseModel):
+class FunctionCreateRequest(PostBaseContractModel):
     slug: str
     name: str
     handler_type: str = "echo"
@@ -17,7 +17,7 @@ class FunctionCreateRequest(BaseModel):
     config_json: dict[str, Any] = Field(default_factory=dict)
 
 
-class FunctionRead(BaseModel):
+class FunctionRead(PostBaseContractModel):
     id: int
     slug: str
     name: str
@@ -27,14 +27,14 @@ class FunctionRead(BaseModel):
     is_active: bool
 
 
-class FunctionInvokeRequest(BaseModel):
+class FunctionInvokeRequest(PostBaseContractModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     invocation_type: str = "sync"
     timeout_ms: int | None = None
     cancel_requested: bool = False
 
 
-class ExecutionRead(BaseModel):
+class ExecutionRead(PostBaseContractModel):
     id: int
     function_definition_id: int
     invocation_type: str
@@ -48,10 +48,10 @@ class ExecutionRead(BaseModel):
     status: str
     input_json: dict[str, Any]
     output_json: dict[str, Any]
-    error_text: str
-    started_at: datetime
-    completed_at: datetime | None
-    log_excerpt: str
+    started_at: ISODateTime
+    completed_at: ISODateTime | None
+    error_text: str = ""
+    log_excerpt: str = ""
 
 
 class FunctionsProvider(ProviderAdapter, Protocol):
