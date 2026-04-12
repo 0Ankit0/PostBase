@@ -555,6 +555,43 @@ async def record_rate_limit_event(
     return entry
 
 
+async def record_security_error_event(
+    db: AsyncSession,
+    *,
+    request: Request | None,
+    logger_name: str,
+    source: str,
+    event_code: str,
+    message: str,
+    user_id: int | None = None,
+    ip_address: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    exc: Exception | None = None,
+) -> ObservabilityLogEntry:
+    diagnostics = dict(metadata or {})
+    if exc is not None:
+        diagnostics["error_type"] = type(exc).__name__
+        diagnostics["error"] = str(exc)
+
+    if exc is not None:
+        logging.getLogger(logger_name).exception(message)
+    else:
+        logging.getLogger(logger_name).error(message)
+
+    return await create_log_entry(
+        db,
+        level="ERROR",
+        logger_name=logger_name,
+        source=source,
+        message=message,
+        event_code=event_code,
+        metadata=diagnostics,
+        request=request,
+        user_id=user_id,
+        ip_address=ip_address,
+    )
+
+
 async def evaluate_rate_limit_spike(
     db: AsyncSession,
     *,

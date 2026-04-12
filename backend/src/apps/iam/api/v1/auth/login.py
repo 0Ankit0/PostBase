@@ -24,6 +24,7 @@ from src.apps.analytics.service import AnalyticsService
 from src.apps.analytics.events import AuthEvents
 from src.apps.observability.service import (
     record_failed_login_event,
+    record_security_error_event,
     record_successful_login_event,
     record_token_event,
 )
@@ -339,8 +340,21 @@ async def logout(
                     await db.commit()
                     # Invalidate cached token list so revoked tokens are not served from cache
                     await RedisCache.clear_pattern(f"tokens:active:{current_user.id}:*")
-            except Exception:
-                pass
+            except Exception as revoke_error:
+                ip_address = get_client_ip(request)
+                await record_security_error_event(
+                    db,
+                    request=request,
+                    logger_name="auth.logout",
+                    source="auth",
+                    event_code="auth.logout_revocation_failed",
+                    message="Failed to revoke tokens during logout",
+                    user_id=current_user.id,
+                    ip_address=ip_address,
+                    metadata={"logout_stage": "token_revocation"},
+                    exc=revoke_error,
+                )
+                await db.commit()
         
         clear_auth_cookies(response)
         await analytics.capture(str(current_user.id), AuthEvents.LOGGED_OUT)

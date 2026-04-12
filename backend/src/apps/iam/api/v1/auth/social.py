@@ -1,5 +1,6 @@
 """Social OAuth2 login endpoints — thin router, all logic delegated to utils and config."""
 from datetime import datetime, timedelta, timezone
+from json import JSONDecodeError
 from typing import Any, Optional
 
 import httpx
@@ -20,7 +21,11 @@ from src.apps.iam.utils.ip_access import revoke_tokens_for_ip, get_client_ip
 from src.apps.analytics.dependencies import get_analytics
 from src.apps.analytics.service import AnalyticsService
 from src.apps.analytics.events import AuthEvents
-from src.apps.observability.service import record_successful_login_event, record_token_event
+from src.apps.observability.service import (
+    record_security_error_event,
+    record_successful_login_event,
+    record_token_event,
+)
 from src.apps.iam.utils.social import (
     extract_user_info,
     find_or_create_social_user,
@@ -184,8 +189,19 @@ async def social_callback(
                 )
                 if primary:
                     user_info["email"] = primary
-            except Exception:
-                pass
+            except (httpx.HTTPError, JSONDecodeError, ValueError, TypeError, KeyError) as email_error:
+                await record_security_error_event(
+                    db,
+                    request=request,
+                    logger_name="auth.social",
+                    source="auth",
+                    event_code="auth.social_email_fallback_failed",
+                    message="Failed to resolve social email from provider fallback endpoint",
+                    user_id=None,
+                    metadata={"provider": provider, "fallback": "emails_endpoint"},
+                    exc=email_error,
+                )
+                await db.commit()
 
     social_id, email, display_name = extract_user_info(provider, user_info)
 
