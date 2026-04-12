@@ -81,3 +81,21 @@ class SecurityIncidentRead(_HashIdModel):
 class SecurityIncidentUpdate(BaseModel):
     status: str
     review_notes: str | None = None
+
+
+class AuthAuditTimelineEventRead(_HashIdModel):
+    id: int
+    created_at: datetime
+    actor_user_id: int | None
+    tenant_id: int | None
+    project_id: int | None
+    environment_id: int | None
+    event_name: str
+    subject: str
+    subject_id: str
+    payload: dict[str, Any]
+
+
+class AuthAuditTimelineResponse(BaseModel):
+    items: list[AuthAuditTimelineEventRead]
+    total: int

@@ -212,6 +212,8 @@ async def _authorize_environment_mutation(
         environment=environment,
         user_id=current_user.id,
         min_role=min_role,
+        policy_resource="postbase.control_plane",
+        policy_action=action,
     )
 
 

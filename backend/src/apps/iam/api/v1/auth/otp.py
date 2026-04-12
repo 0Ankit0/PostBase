@@ -28,6 +28,7 @@ from src.apps.observability.service import (
     record_successful_login_event,
     record_token_event,
 )
+from src.postbase.platform.audit import record_auth_timeline_event
 
 router = APIRouter()
 
@@ -121,6 +122,7 @@ async def verify_otp(
         await RedisCache.delete(f"user:profile:{current_user.id}")
 
         await analytics.capture(str(current_user.id), AuthEvents.OTP_ENABLED)
+        await record_auth_timeline_event(db, event_name="auth.2fa_enabled", actor_user_id=current_user.id, subject="iam_user", subject_id=str(current_user.id))
 
         return {"message": "OTP verified and enabled successfully"}
     except HTTPException:
@@ -168,6 +170,7 @@ async def disable_otp(
         await RedisCache.delete(f"user:profile:{current_user.id}")
 
         await analytics.capture(str(current_user.id), AuthEvents.OTP_DISABLED)
+        await record_auth_timeline_event(db, event_name="auth.2fa_disabled", actor_user_id=current_user.id, subject="iam_user", subject_id=str(current_user.id))
 
         return {"message": "OTP disabled successfully"}
     except HTTPException:

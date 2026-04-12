@@ -4,12 +4,18 @@ from fastapi import APIRouter, Depends
 
 from src.postbase.capabilities.contracts import CAPABILITY_ERROR_RESPONSES, FacadeStatusResponse
 from src.postbase.capabilities.auth.contracts import (
+    AuthBasicMessage,
     AuthCurrentUser,
     AuthLoginRequest,
+    AuthPasswordResetConfirmRequest,
+    AuthPasswordResetRequest,
     AuthRefreshRequest,
+    AuthSessionInfo,
     AuthSessionResponse,
+    AuthSessionRevokeRequest,
     AuthSignupRequest,
     AuthTokens,
+    AuthTwoFactorChallengeRequest,
 )
 from src.postbase.capabilities.auth.dependencies import (
     get_access_context,
@@ -71,3 +77,64 @@ async def auth_status(
     facade: AuthFacade = Depends(get_auth_facade),
 ) -> FacadeStatusResponse:
     return await facade.status(context)
+
+
+@router.post("/password/reset", response_model=AuthBasicMessage, responses=CAPABILITY_ERROR_RESPONSES)
+async def request_password_reset(
+    payload: AuthPasswordResetRequest,
+    context=Depends(get_access_context),
+    provider=Depends(get_auth_provider),
+) -> AuthBasicMessage:
+    return await provider.request_password_reset(context, payload)
+
+
+@router.post("/password/reset/confirm", response_model=AuthBasicMessage, responses=CAPABILITY_ERROR_RESPONSES)
+async def confirm_password_reset(
+    payload: AuthPasswordResetConfirmRequest,
+    context=Depends(get_access_context),
+    provider=Depends(get_auth_provider),
+) -> AuthBasicMessage:
+    return await provider.confirm_password_reset(context, payload)
+
+
+@router.post("/2fa/enable", response_model=AuthBasicMessage, responses=CAPABILITY_ERROR_RESPONSES)
+async def enable_two_factor(
+    context=Depends(get_access_context),
+    provider=Depends(get_auth_provider),
+) -> AuthBasicMessage:
+    return await provider.enable_two_factor(context)
+
+
+@router.post("/2fa/verify", response_model=AuthBasicMessage, responses=CAPABILITY_ERROR_RESPONSES)
+async def verify_two_factor(
+    payload: AuthTwoFactorChallengeRequest,
+    context=Depends(get_access_context),
+    provider=Depends(get_auth_provider),
+) -> AuthBasicMessage:
+    return await provider.verify_two_factor(context, payload)
+
+
+@router.post("/2fa/disable", response_model=AuthBasicMessage, responses=CAPABILITY_ERROR_RESPONSES)
+async def disable_two_factor(
+    payload: AuthTwoFactorChallengeRequest,
+    context=Depends(get_access_context),
+    provider=Depends(get_auth_provider),
+) -> AuthBasicMessage:
+    return await provider.disable_two_factor(context, payload)
+
+
+@router.get("/sessions", response_model=list[AuthSessionInfo], responses=CAPABILITY_ERROR_RESPONSES)
+async def list_sessions(
+    context=Depends(get_access_context),
+    provider=Depends(get_auth_provider),
+) -> list[AuthSessionInfo]:
+    return await provider.list_sessions(context)
+
+
+@router.post("/sessions/revoke", response_model=AuthBasicMessage, responses=CAPABILITY_ERROR_RESPONSES)
+async def revoke_session(
+    payload: AuthSessionRevokeRequest,
+    context=Depends(get_access_context),
+    provider=Depends(get_auth_provider),
+) -> AuthBasicMessage:
+    return await provider.revoke_session(context, payload)

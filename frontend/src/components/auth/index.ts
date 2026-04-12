@@ -7,3 +7,5 @@ export { ChangePasswordForm } from './change-password-form';
 export { EditProfileForm } from './edit-profile-form';
 export { AvatarForm } from './avatar-form';
 export { TwoFactorForm } from './two-factor-form';
+
+export { AuthAuditTimeline } from './auth-audit-timeline';

@@ -11,6 +11,7 @@ from sqlmodel import select
 
 from src.apps.iam.models.user import User
 from src.apps.iam.utils.hashid import decode_id_or_404, encode_id
+from src.apps.iam.utils.rbac import check_environment_permission
 from src.apps.multitenancy.models.tenant import TenantMember, TenantRole
 from src.postbase.domain.enums import (
     ApiKeyRole,
@@ -61,7 +62,7 @@ from src.postbase.providers.data.postgres_native import PostgresNativeDataProvid
 
 ROLE_ORDER = {TenantRole.MEMBER: 0, TenantRole.ADMIN: 1, TenantRole.OWNER: 2}
 REQUIRED_OPERATIONS: dict[CapabilityKey, set[str]] = {
-    CapabilityKey.AUTH: {"signup", "login", "refresh", "me", "logout"},
+    CapabilityKey.AUTH: {"signup", "login", "refresh", "me", "logout", "password_reset_request", "password_reset_confirm", "2fa_enable", "2fa_verify", "2fa_disable", "session_list", "session_revoke"},
     CapabilityKey.DATA: {"namespaces", "tables", "crud"},
     CapabilityKey.STORAGE: {"upload", "list", "signed_url", "delete"},
     CapabilityKey.FUNCTIONS: {"create", "list", "invoke", "executions"},
@@ -302,11 +303,23 @@ async def ensure_environment_access(
     environment: Environment,
     user_id: int,
     min_role: TenantRole = TenantRole.MEMBER,
+    policy_resource: str = "postbase.environment",
+    policy_action: str = "read",
 ) -> Project:
     project = await db.get(Project, environment.project_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     await require_project_access(db, project=project, user_id=user_id, min_role=min_role)
+    allowed = await check_environment_permission(
+        user_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        resource=policy_resource,
+        action=policy_action,
+        session=db,
+    )
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"code": "environment_policy_denied"})
     return project
 
 

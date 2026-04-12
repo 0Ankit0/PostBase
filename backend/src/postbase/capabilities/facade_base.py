@@ -22,7 +22,11 @@ class CapabilityFacadeBase:
             capability=self.capability,
         )
         try:
-            return provider_registry.resolve(self.capability, binding.provider_key)
+            provider = provider_registry.resolve(self.capability, binding.provider_key)
+            configure = getattr(provider, "configure_binding", None)
+            if callable(configure):
+                configure(binding)
+            return provider
         except ProviderResolutionError as exc:
             raise RuntimeError(str(exc)) from exc
 

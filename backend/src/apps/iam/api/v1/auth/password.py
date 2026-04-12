@@ -19,6 +19,7 @@ from src.apps.core.cache import RedisCache
 from src.apps.analytics.dependencies import get_analytics
 from src.apps.analytics.service import AnalyticsService
 from src.apps.analytics.events import AuthEvents
+from src.postbase.platform.audit import record_auth_timeline_event
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
@@ -50,6 +51,7 @@ async def request_password_reset(
         await EmailService.send_password_reset_email(user, reset_token)
 
         await analytics.capture(str(user.id), AuthEvents.PASSWORD_RESET_REQUESTED)
+        await record_auth_timeline_event(db, event_name="auth.password_reset_requested", actor_user_id=user.id, subject="iam_user", subject_id=str(user.id))
 
         return {"message": "If the email exists, a password reset link has been sent"}
     except HTTPException:
@@ -163,6 +165,7 @@ async def confirm_password_reset(
         await RedisCache.clear_pattern(f"tokens:active:{user_id}:*")
 
         await analytics.capture(str(user_id), AuthEvents.PASSWORD_RESET_COMPLETED)
+        await record_auth_timeline_event(db, event_name="auth.password_reset_completed", actor_user_id=int(user_id), subject="iam_user", subject_id=str(user_id))
 
         return {"message": "Password has been reset successfully"}
     except HTTPException:
@@ -215,6 +218,7 @@ async def change_password(
         await RedisCache.clear_pattern(f"tokens:active:{current_user.id}:*")
 
         await analytics.capture(str(current_user.id), AuthEvents.PASSWORD_CHANGED)
+        await record_auth_timeline_event(db, event_name="auth.password_changed", actor_user_id=current_user.id, subject="iam_user", subject_id=str(current_user.id))
 
         return {"message": "Password changed successfully"}
     except HTTPException:
