@@ -413,6 +413,44 @@ class FileObject(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class StorageSignedUrlGrant(SQLModel, table=True):
+    __tablename__ = "postbase_storage_signed_url_grant"
+    __table_args__ = (
+        Index("ix_postbase_storage_signed_url_grant_active", "environment_id", "file_object_id", "revoked_at"),
+        UniqueConstraint("token_hash", name="uq_postbase_storage_signed_url_grant_token_hash"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
+    file_object_id: int = Field(foreign_key="postbase_file_object.id", index=True)
+    access_mode: str = Field(default="read", max_length=16)
+    token_hash: str = Field(max_length=128, index=True)
+    expires_at: datetime = Field(index=True)
+    revoked_at: datetime | None = Field(default=None, index=True)
+    issued_by_auth_user_id: int | None = Field(default=None, foreign_key="postbase_auth_user.id")
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class StorageRetentionRule(SQLModel, table=True):
+    __tablename__ = "postbase_storage_retention_rule"
+    __table_args__ = (
+        UniqueConstraint("environment_id", "bucket_key", "namespace", name="uq_postbase_storage_retention_rule_scope"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
+    bucket_key: str = Field(default="default", max_length=63, index=True)
+    namespace: str = Field(default="default", max_length=63, index=True)
+    max_age_days: int = Field(default=30)
+    sweep_interval_minutes: int = Field(default=60)
+    enabled: bool = Field(default=True, index=True)
+    next_run_at: datetime | None = Field(default=None, index=True)
+    last_run_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class FunctionDefinition(SQLModel, table=True):
     __tablename__ = "postbase_function_definition"
     __table_args__ = (

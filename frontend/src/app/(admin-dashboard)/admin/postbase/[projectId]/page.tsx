@@ -29,7 +29,7 @@ import {
   useRotatePostBaseSecret,
   useUpdatePostBaseBindingStatus,
 } from '@/hooks';
-import type { PostBaseEnvironmentRead } from '@/types';
+import type { PostBaseBindingRead, PostBaseEnvironmentRead, PostBaseProviderCatalogRead, PostBaseSecretRead } from '@/types';
 
 interface ProjectDetailPageProps {
   params: {
@@ -102,6 +102,10 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const failedMigrations = migrationItems.filter((item) => item.status === 'failed');
   const needsReconciliation = migrationItems.filter((item) => item.reconciliation_status !== 'in_sync');
   const isProductionEnvironment = shouldRequireProductionConfirmation(selectedEnvironment?.stage);
+  const storageBindings = useMemo(
+    () => bindingItems.filter((binding) => binding.capability_key === 'storage'),
+    [bindingItems],
+  );
 
   const switchEnvironment = (environmentId: string) => {
     setSelectedEnvironmentId(environmentId);
@@ -361,6 +365,12 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         </Card>
       </div>
 
+      <StorageValidationCard
+        bindings={storageBindings}
+        providerCatalog={providerCatalog?.items ?? []}
+        secrets={secretItems}
+      />
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <SecretForm environmentId={selectedEnvironment?.id} secrets={secretItems} isProductionEnvironment={isProductionEnvironment} />
         <BindingForm
@@ -476,6 +486,65 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
       </Card>
     </div>
   );
+}
+
+function StorageValidationCard({
+  bindings,
+  providerCatalog,
+  secrets,
+}: {
+  bindings: PostBaseBindingRead[];
+  providerCatalog: PostBaseProviderCatalogRead[];
+  secrets: PostBaseSecretRead[];
+}) {
+  const providerByKey = useMemo(
+    () => new Map(providerCatalog.filter((item) => item.capability_key === 'storage').map((item) => [item.provider_key, item])),
+    [providerCatalog],
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Storage validation & remediation</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {bindings.length === 0 ? <p className="text-gray-500">No storage binding configured for this environment.</p> : null}
+        {bindings.map((binding) => {
+          const provider = providerByKey.get(binding.provider_key);
+          const requiredSecrets = readStringArray(provider?.metadata_json?.required_secret_kinds);
+          const missingSecretKinds = requiredSecrets.filter((secretKind) => !secrets.some((secret) => secret.secret_kind === secretKind));
+          const supportedOperations = readStringArray(provider?.metadata_json?.supported_operations);
+          const requiredOps = ['upload', 'list', 'signed_url_issue', 'signed_url_refresh', 'signed_url_revoke', 'retention_execute'];
+          const missingOps = requiredOps.filter((required) => !supportedOperations.includes(required));
+          return (
+            <div key={binding.id} className="rounded border border-gray-200 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium text-gray-900">{binding.provider_key}</p>
+                <StatusPill value={binding.status} type="status" />
+              </div>
+              <p className="text-xs text-gray-500">Readiness: {binding.readiness_detail || 'No readiness details reported.'}</p>
+              <p className="mt-2 text-xs text-gray-600">Required secrets: {requiredSecrets.join(', ') || 'none'}</p>
+              <p className="text-xs text-gray-600">Missing secrets: {missingSecretKinds.join(', ') || 'none'}</p>
+              <p className="text-xs text-gray-600">Missing operations: {missingOps.join(', ') || 'none'}</p>
+              {(missingSecretKinds.length > 0 || missingOps.length > 0 || binding.status !== 'active') && (
+                <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                  <p className="font-medium">Remediation actions</p>
+                  {missingSecretKinds.length > 0 ? <p>• Create and link secrets for: {missingSecretKinds.join(', ')}.</p> : null}
+                  {missingOps.length > 0 ? <p>• Switch to a provider that supports: {missingOps.join(', ')}.</p> : null}
+                  {binding.status !== 'active' ? <p>• Re-run binding validation and activate once checks pass.</p> : null}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
 }
 
 function MetricCard({ label, value }: { label: string; value: number }) {
