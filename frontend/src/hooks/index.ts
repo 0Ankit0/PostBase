@@ -25,6 +25,7 @@ export {
   useNotificationDevices,
   useRegisterNotificationDevice,
   useRemoveNotificationDevice,
+  useNotificationChannelPermissions,
 } from './use-notifications';
 
 export {
@@ -130,4 +131,9 @@ export {
   usePostBaseFunctionSchedules,
   usePostBaseFunctionDeployments,
   usePostBaseFunctionRevisions,
+  usePostBaseChannelPolicyTemplates,
+  usePostBaseChannels,
+  usePostBaseUpdateChannel,
+  usePostBaseWebhookEndpoints,
+  usePostBaseRotateWebhookEndpointSecret,
 } from './use-postbase';

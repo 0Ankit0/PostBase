@@ -594,6 +594,10 @@ class EventChannel(SQLModel, table=True):
     environment_id: int = Field(foreign_key="postbase_environment.id", index=True)
     channel_key: str = Field(max_length=80, index=True)
     description: str = Field(default="", max_length=255)
+    policy_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -649,6 +653,10 @@ class WebhookDeliveryJob(SQLModel, table=True):
     latest_response_code: int | None = Field(default=None)
     latest_latency_ms: int | None = Field(default=None)
     attempt_history_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, default=list),
+    )
+    signing_secrets_json: list[str] = Field(
         default_factory=list,
         sa_column=Column(JSON, nullable=False, default=list),
     )

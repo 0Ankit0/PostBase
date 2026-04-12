@@ -104,3 +104,53 @@ async def record_auth_timeline_event(
         environment_id=environment_id,
         payload=normalized_payload,
     )
+
+
+async def record_channel_policy_event(
+    db: AsyncSession,
+    *,
+    context,
+    channel_id: int,
+    channel_key: str,
+    previous_policy: dict,
+    next_policy: dict,
+) -> AuditLog:
+    return await record_audit_event(
+        db,
+        action="events.channel_policy.updated",
+        entity_type="event_channel",
+        entity_id=str(channel_id),
+        actor_user_id=getattr(context, "auth_user_id", None),
+        tenant_id=context.project.tenant_id,
+        project_id=context.project_id,
+        environment_id=context.environment_id,
+        payload={
+            "channel_key": channel_key,
+            "previous_policy": previous_policy,
+            "next_policy": next_policy,
+        },
+    )
+
+
+async def record_webhook_secret_rotation_event(
+    db: AsyncSession,
+    *,
+    context,
+    channel_id: int,
+    subscription_id: int,
+    grace_window_seconds: int,
+) -> AuditLog:
+    return await record_audit_event(
+        db,
+        action="events.webhook_secret.rotated",
+        entity_type="event_webhook_endpoint",
+        entity_id=str(subscription_id),
+        actor_user_id=getattr(context, "auth_user_id", None),
+        tenant_id=context.project.tenant_id,
+        project_id=context.project_id,
+        environment_id=context.environment_id,
+        payload={
+            "channel_id": channel_id,
+            "grace_window_seconds": grace_window_seconds,
+        },
+    )

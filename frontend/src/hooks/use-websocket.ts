@@ -11,6 +11,7 @@ interface WebSocketMessage {
 }
 
 interface UseWebSocketOptions {
+  allowedChannels?: string[];
   url: string;
   onMessage?: (message: WebSocketMessage) => void;
   onOpen?: () => void;
@@ -30,6 +31,7 @@ export function useWebSocket({
   reconnect = true,
   reconnectInterval = 3000,
   maxReconnectAttempts = 5,
+  allowedChannels = [],
 }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -53,6 +55,10 @@ export function useWebSocket({
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data as string) as WebSocketMessage;
+        const channelKey = (message.data as { channel_key?: string } | null)?.channel_key;
+        if (channelKey && allowedChannels.length > 0 && !allowedChannels.includes(channelKey)) {
+          return;
+        }
         onMessage?.(message);
       } catch (error) {
         console.error('Failed to parse WebSocket message:', error);
@@ -73,7 +79,7 @@ export function useWebSocket({
     };
 
     wsRef.current = ws;
-  }, [url, onMessage, onOpen, onClose, onError, reconnect, reconnectInterval, maxReconnectAttempts]);
+  }, [url, onMessage, onOpen, onClose, onError, reconnect, reconnectInterval, maxReconnectAttempts, allowedChannels]);
 
   const disconnect = useCallback(() => {
     if (wsRef.current) {
@@ -97,12 +103,13 @@ export function useWebSocket({
 }
 
 /** Connect to the global WebSocket endpoint. Invalidates notification queries on incoming events. */
-export function useNotificationWebSocket() {
+export function useNotificationWebSocket(allowedChannels: string[] = []) {
   const queryClient = useQueryClient();
   const wsBase = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
 
   return useWebSocket({
     url: `${wsBase}/api/v1/ws/`,
+    allowedChannels,
     onMessage: (message) => {
       if (message.type === 'notification' || message.type === 'event') {
         queryClient.invalidateQueries({ queryKey: ['notifications'] });

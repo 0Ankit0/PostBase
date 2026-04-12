@@ -22,6 +22,9 @@ import type {
   PostBaseUsageMeterRead,
   PostBaseWebhookDrainResult,
   PostBaseWebhookRecoveryResult,
+  PostBaseChannelRead,
+  PostBaseChannelPolicyTemplateRead,
+  PostBaseWebhookEndpointRead,
 } from '@/types';
 
 export function resolvePostBaseContextKey(tenantId: string | null | undefined): string {
@@ -637,5 +640,73 @@ export function usePostBaseFunctionRevisions(functionId: string | undefined, par
     },
     enabled: Boolean(functionId),
     staleTime: 10_000,
+  });
+}
+
+
+export function usePostBaseChannelPolicyTemplates() {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  return useQuery({
+    queryKey: ['postbase', tenantId, 'events', 'channel-policy-templates'],
+    queryFn: async () => {
+      const response = await apiClient.get<PostBaseChannelPolicyTemplateRead[]>('/events/channel-policy-templates');
+      return response.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function usePostBaseChannels(environmentId: string | undefined, params?: PostBasePaginationParams) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  const pagination = normalizePaginationParams(params);
+  return useQuery({
+    queryKey: ['postbase', tenantId, 'environments', environmentId, 'events', 'channels', pagination.skip, pagination.limit],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<PostBaseChannelRead>>('/events/channels', { params: pagination });
+      return response.data;
+    },
+    enabled: Boolean(environmentId),
+  });
+}
+
+export function usePostBaseUpdateChannel() {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { channelId: number; policy_json?: Record<string, unknown>; description?: string; policy_template?: string }) => {
+      const response = await apiClient.patch<PostBaseChannelRead>(`/events/channels/${payload.channelId}`, payload);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments'] });
+    },
+  });
+}
+
+export function usePostBaseWebhookEndpoints(environmentId: string | undefined, channelId?: number) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  return useQuery({
+    queryKey: ['postbase', tenantId, 'environments', environmentId, 'events', 'webhook-endpoints', channelId],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<PostBaseWebhookEndpointRead>>('/events/webhook-endpoints', {
+        params: { channel_id: channelId, skip: 0, limit: 25 },
+      });
+      return response.data;
+    },
+    enabled: Boolean(environmentId),
+  });
+}
+
+export function usePostBaseRotateWebhookEndpointSecret() {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { subscriptionId: number; new_secret: string; grace_window_seconds: number }) => {
+      const response = await apiClient.post<PostBaseWebhookEndpointRead>(`/events/webhook-endpoints/${payload.subscriptionId}/rotate-secret`, payload);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments'] });
+    },
   });
 }
