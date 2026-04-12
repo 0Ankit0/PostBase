@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -15,6 +16,7 @@ from src.apps.iam.models.login_attempt import LoginAttempt
 from src.apps.observability.models import ObservabilityLogEntry, SecurityIncident
 
 log = logging.getLogger(__name__)
+_cache_metric_counters: Counter[str] = Counter()
 
 INCIDENT_ACTIVE_STATUSES = ("open", "acknowledged")
 LEVEL_ORDER = {
@@ -24,6 +26,32 @@ LEVEL_ORDER = {
     "ERROR": logging.ERROR,
     "CRITICAL": logging.CRITICAL,
 }
+
+
+def record_cache_metric(
+    *,
+    operation: str,
+    outcome: str,
+    namespace: str,
+    error_type: str | None = None,
+    attempts: int = 1,
+) -> None:
+    metric_key = f"cache.{operation}.{outcome}"
+    _cache_metric_counters[metric_key] += 1
+    context: dict[str, Any] = {
+        "metric": metric_key,
+        "operation": operation,
+        "outcome": outcome,
+        "namespace": namespace,
+        "attempts": attempts,
+    }
+    if error_type:
+        context["error_type"] = error_type
+    log.log(
+        logging.INFO if outcome == "success" else logging.WARNING,
+        "Cache metric event",
+        extra={"cache_metric": context},
+    )
 
 
 def failed_login_window() -> timedelta:
