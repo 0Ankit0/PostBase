@@ -21,6 +21,7 @@ class CapabilityProfile(BaseModel):
     supported_regions: list[str] = Field(default_factory=lambda: ["global"])
     required_secret_kinds: list[str] = Field(default_factory=list)
     optional_features: list[str] = Field(default_factory=list)
+    validation_checks: list[str] = Field(default_factory=list)
     limits: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -10,6 +10,7 @@ from sqlmodel import select
 from src.apps.core.celery_app import celery_app  # noqa: F401
 from src.db.session import async_session_factory
 from src.postbase.capabilities.events.webhook_jobs import process_due_webhook_jobs
+from src.postbase.capabilities.storage.service import run_storage_retention_for_due_environments
 from src.postbase.domain.models import EventChannel, WebhookDeliveryJob
 
 logger = logging.getLogger(__name__)
@@ -56,3 +57,18 @@ def process_webhook_delivery_jobs_task(limit: int = 200) -> int:
     except Exception as exc:
         logger.exception("Failed processing webhook delivery jobs: %s", exc)
         return 0
+
+
+@shared_task(name="postbase_storage_retention_sweep_task")
+def storage_retention_sweep_task(limit: int = 200) -> dict[str, int]:
+    try:
+        async def _run() -> dict[str, int]:
+            async with async_session_factory() as db:
+                result = await run_storage_retention_for_due_environments(db, limit=limit)
+                await db.commit()
+                return result
+
+        return asyncio.run(_run())
+    except Exception as exc:
+        logger.exception("Failed running storage retention sweep: %s", exc)
+        return {"scanned_files": 0, "deleted_files": 0, "updated_rules": 0, "environments": 0}

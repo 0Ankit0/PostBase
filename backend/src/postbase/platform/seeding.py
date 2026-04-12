@@ -68,6 +68,7 @@ async def seed_provider_catalog(db: AsyncSession) -> None:
                         "required_secret_kinds": profile.required_secret_kinds,
                         "supported_operations": profile.supported_operations,
                         "optional_features": profile.optional_features,
+                        "validation_checks": profile.validation_checks,
                         "limits": profile.limits,
                     },
                 )
