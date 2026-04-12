@@ -23,6 +23,8 @@ import {
   usePostBaseEnvironments,
   usePostBaseMigrations,
   usePostBaseProjectOverview,
+  usePostBaseProjectAudit,
+  usePostBaseComplianceEvidence,
   usePostBaseProviderCatalog,
   useReconcilePostBaseMigration,
   useRecoverPostBaseWebhooks,
@@ -57,6 +59,7 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const { data: environments } = environmentsQuery;
   const { data: overview } = overviewQuery;
   const { data: usage } = usePostBaseUsage(projectId);
+  const { data: projectAudit } = usePostBaseProjectAudit(projectId);
 
   const environmentItems = environments?.items ?? [];
   const initialSelectedEnvironment = useMemo(
@@ -94,6 +97,8 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
   const { data: bindings } = usePostBaseBindings(selectedEnvironment?.id);
   const { data: secrets } = usePostBaseSecrets(selectedEnvironment?.id);
   const { data: migrations } = usePostBaseMigrations(selectedEnvironment?.id);
+  const { data: privilegedEvidence } = usePostBaseComplianceEvidence(selectedEnvironment?.id, 'privileged');
+  const { data: migrationEvidence } = usePostBaseComplianceEvidence(selectedEnvironment?.id, 'migration');
   const applyMigration = useApplyPostBaseMigration(selectedEnvironment?.id);
   const retryMigration = useRetryPostBaseMigration(selectedEnvironment?.id);
   const reconcileMigration = useReconcilePostBaseMigration(selectedEnvironment?.id);
@@ -117,6 +122,8 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
 
   const pendingMigrations = migrationItems.filter((item) => item.status === 'pending');
   const failedMigrations = migrationItems.filter((item) => item.status === 'failed');
+  const queueLag = migrationItems.filter((item) => item.status === 'pending').length;
+  const migrationCriticalPath = pendingMigrations.length + failedMigrations.length;
   const needsReconciliation = migrationItems.filter((item) => item.reconciliation_status !== 'in_sync');
   const isProductionEnvironment = shouldRequireProductionConfirmation(selectedEnvironment?.stage);
   const storageBindings = useMemo(
@@ -175,6 +182,37 @@ export default function PostBaseProjectDetailPage({ params }: ProjectDetailPageP
         <MetricCard label="Degraded bindings" value={overview?.degraded_bindings ?? 0} />
         <MetricCard label="Usage total" value={Math.round(overview?.usage_points_total ?? 0)} />
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Operator surface (usage, audit, health, queue, migrations)</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+          <div className="rounded border border-gray-200 p-3">
+            <p className="font-medium">Usage & quota</p>
+            <p>Total usage points: {Math.round(selectedEnvironmentOverview?.usage_points_total ?? 0)}</p>
+            <p>Quota state: {selectedEnvironmentOverview?.quota_state ?? 'unknown'}</p>
+            <p>Degradation mode: {selectedEnvironmentOverview?.degradation_mode ?? 'unknown'}</p>
+          </div>
+          <div className="rounded border border-gray-200 p-3">
+            <p className="font-medium">Audit & evidence</p>
+            <p>Recent audit events: {projectAudit?.total ?? 0}</p>
+            <p>Privileged evidence rows: {privilegedEvidence?.record_count ?? 0}</p>
+            <p>Migration evidence rows: {migrationEvidence?.record_count ?? 0}</p>
+          </div>
+          <div className="rounded border border-gray-200 p-3">
+            <p className="font-medium">Health & queue lag</p>
+            <p>Overall capability health: {health?.overall_ready ? 'ready' : 'degraded'}</p>
+            <p>Queue lag indicator: {queueLag}</p>
+          </div>
+          <div className="rounded border border-gray-200 p-3">
+            <p className="font-medium">Migration critical path</p>
+            <p>Pending migrations: {pendingMigrations.length}</p>
+            <p>Failed migrations: {failedMigrations.length}</p>
+            <p>Critical path score: {migrationCriticalPath}</p>
+          </div>
+        </CardContent>
+      </Card>
 
       {(overviewQuery.isPending || environmentsQuery.isPending) && (
         <Card>

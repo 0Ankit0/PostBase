@@ -25,6 +25,8 @@ import type {
   PostBaseChannelRead,
   PostBaseChannelPolicyTemplateRead,
   PostBaseWebhookEndpointRead,
+  PostBaseAuditLogRead,
+  PostBaseComplianceEvidenceBundleRead,
 } from '@/types';
 
 export function resolvePostBaseContextKey(tenantId: string | null | undefined): string {
@@ -189,6 +191,46 @@ export function usePostBaseProjectOverview(projectId: string | undefined) {
     refetchInterval: 20_000,
     refetchIntervalInBackground: true,
     staleTime: 15_000,
+  });
+}
+
+export function usePostBaseProjectAudit(
+  projectId: string | undefined,
+  params?: { actor_user_id?: string; action?: string; resource?: string },
+) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  return useQuery({
+    queryKey: ['postbase', tenantId, 'projects', projectId, 'audit', params],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<PostBaseAuditLogRead>>(`/projects/${projectId}/audit/query`, {
+        params: {
+          actor_user_id: params?.actor_user_id,
+          action: params?.action,
+          entity_type: params?.resource,
+          limit: 50,
+          skip: 0,
+        },
+      });
+      return response.data;
+    },
+    enabled: Boolean(projectId),
+    staleTime: 15_000,
+  });
+}
+
+export function usePostBaseComplianceEvidence(environmentId: string | undefined, scope: 'privileged' | 'migration') {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  return useQuery({
+    queryKey: ['postbase', tenantId, 'environments', environmentId, 'compliance', scope],
+    queryFn: async () => {
+      const response = await apiClient.get<PostBaseComplianceEvidenceBundleRead>(
+        `/environments/${environmentId}/compliance/evidence`,
+        { params: { scope, export_format: 'json' } },
+      );
+      return response.data;
+    },
+    enabled: Boolean(environmentId),
+    staleTime: 30_000,
   });
 }
 

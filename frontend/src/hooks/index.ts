@@ -112,6 +112,8 @@ export {
   usePostBaseBindings,
   usePostBaseSecrets,
   usePostBaseProjectOverview,
+  usePostBaseProjectAudit,
+  usePostBaseComplianceEvidence,
   usePostBaseUsage,
   usePostBaseCapabilityHealth,
   usePostBaseMigrations,

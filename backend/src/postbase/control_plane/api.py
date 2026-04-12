@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Awaitable, Callable, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -20,6 +21,7 @@ from src.postbase.control_plane.schemas import (
     BindingRead,
     BindingStatusUpdate,
     CapabilityHealthReport,
+    ComplianceEvidenceBundleRead,
     EnvironmentApiKeyCreate,
     EnvironmentApiKeyIssued,
     EnvironmentApiKeyRead,
@@ -45,6 +47,7 @@ from src.postbase.control_plane.schemas import (
     TableCreate,
     TableRead,
     UsageMeterRead,
+    AuditExportRead,
     WebhookDrainResult,
     WebhookRecoveryResult,
 )
@@ -70,6 +73,7 @@ from src.postbase.control_plane.service import (
     cancel_schema_migration,
     execute_migration_reconciliation,
     ensure_environment_access,
+    enforce_quota_lifecycle,
     refresh_migration_reconciliation_state,
     require_project_access,
     revoke_secret_ref,
@@ -94,7 +98,8 @@ from src.postbase.domain.models import (
     UsageMeter,
 )
 from src.postbase.platform.access import issue_environment_api_key
-from src.postbase.platform.audit import record_audit_event
+from src.postbase.platform.audit import build_compliance_evidence_bundle, query_audit_logs, record_audit_event, serialize_audit_export
+from src.apps.core.config import settings
 from src.postbase.platform.seeding import seed_provider_catalog
 from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
 from src.postbase.tasks import drain_due_webhook_jobs
@@ -207,7 +212,7 @@ async def _authorize_environment_mutation(
     action: str,
 ) -> Project:
     min_role = CONTROL_PLANE_MUTATION_MIN_ROLES.get(action, MUTATION_MIN_ROLE)
-    return await ensure_environment_access(
+    project = await ensure_environment_access(
         db,
         environment=environment,
         user_id=current_user.id,
@@ -215,6 +220,18 @@ async def _authorize_environment_mutation(
         policy_resource="postbase.control_plane",
         policy_action=action,
     )
+    usage_total = (
+        await db.execute(select(func.coalesce(func.sum(UsageMeter.value), 0.0)).where(UsageMeter.environment_id == environment.id))
+    ).scalar_one()
+    quota = (environment.env_policy_json or {}).get("quota", {})
+    enforce_quota_lifecycle(
+        usage_total=float(usage_total or 0.0),
+        warning_threshold=float(quota.get("warning_threshold", 750.0)),
+        soft_limit=float(quota.get("soft_limit", 1000.0)),
+        hard_limit=float(quota.get("hard_limit", 1200.0)),
+        action=action,
+    )
+    return project
 
 
 async def _load_binding_environment_and_project(
@@ -1056,22 +1073,121 @@ async def list_project_audit_logs(
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.ADMIN)
-    total = (
-        await db.execute(select(func.count()).select_from(AuditLog).where(AuditLog.project_id == project.id))
-    ).scalar_one()
-    rows = (
-        await db.execute(
-            select(AuditLog).where(AuditLog.project_id == project.id).order_by(AuditLog.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-        )
-    ).scalars().all()
+    rows, total = await query_audit_logs(db, project_id=project.id, skip=skip, limit=limit)
     return PaginatedResponse[AuditLogRead].create(
         items=[AuditLogRead.model_validate(item) for item in rows],
         total=total,
         skip=skip,
         limit=limit,
     )
+
+
+@router.get("/projects/{project_id}/audit/query", response_model=PaginatedResponse[AuditLogRead])
+async def query_project_audit_logs(
+    project_id: str,
+    actor_user_id: str | None = None,
+    action: str | None = None,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PaginatedResponse[AuditLogRead]:
+    project_db_id = decode_id_or_404(project_id)
+    project = await db.get(Project, project_db_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.ADMIN)
+    actor_db_id = decode_id_or_404(actor_user_id) if actor_user_id else None
+    rows, total = await query_audit_logs(
+        db,
+        project_id=project.id,
+        actor_user_id=actor_db_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        skip=skip,
+        limit=limit,
+    )
+    return PaginatedResponse[AuditLogRead].create(
+        items=[AuditLogRead.model_validate(item) for item in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get("/projects/{project_id}/audit/export", response_model=AuditExportRead)
+async def export_project_audit_logs(
+    project_id: str,
+    export_format: str = Query(default="json", pattern="^(json|csv)$"),
+    actor_user_id: str | None = None,
+    action: str | None = None,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AuditExportRead:
+    project_db_id = decode_id_or_404(project_id)
+    project = await db.get(Project, project_db_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    await require_project_access(db, project=project, user_id=current_user.id, min_role=TenantRole.ADMIN)
+    actor_db_id = decode_id_or_404(actor_user_id) if actor_user_id else None
+    rows, total = await query_audit_logs(
+        db,
+        project_id=project.id,
+        actor_user_id=actor_db_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        skip=0,
+        limit=10_000,
+    )
+    data = serialize_audit_export(rows, export_format=export_format)  # type: ignore[arg-type]
+    return AuditExportRead(export_format=export_format, total=total, data=data)
+
+
+@router.get("/environments/{environment_id}/compliance/evidence", response_model=ComplianceEvidenceBundleRead)
+async def get_environment_compliance_evidence(
+    environment_id: str,
+    scope: str = Query(default="privileged", pattern="^(privileged|migration)$"),
+    export_format: str = Query(default="json", pattern="^(json|csv)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ComplianceEvidenceBundleRead:
+    environment = await _load_environment_or_404(db, environment_id)
+    await _authorize_environment_mutation(
+        db,
+        environment=environment,
+        current_user=current_user,
+        action="migrations" if scope == "migration" else "bindings",
+    )
+    rows, _total = await query_audit_logs(db, environment_id=environment.id, skip=0, limit=10_000)
+    if scope == "migration":
+        filtered = [row for row in rows if row.action.startswith("migration.")]
+    else:
+        filtered = [
+            row
+            for row in rows
+            if row.action.startswith(("binding.", "secret.", "switchover.", "webhook.", "environment.", "project.lifecycle"))
+        ]
+    bundle = build_compliance_evidence_bundle(
+        filtered,
+        export_format=export_format,  # type: ignore[arg-type]
+        scope=scope,  # type: ignore[arg-type]
+        signing_key=settings.SECRET_KEY,
+    )
+    return ComplianceEvidenceBundleRead(**bundle)
 
 
 @router.get("/environments/{environment_id}/reports/capability-health", response_model=CapabilityHealthReport)

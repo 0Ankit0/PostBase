@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+import csv
+import hashlib
+import hmac
+import io
+import json
+from datetime import datetime
+from typing import Literal
+
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -154,3 +163,113 @@ async def record_webhook_secret_rotation_event(
             "grace_window_seconds": grace_window_seconds,
         },
     )
+
+
+async def query_audit_logs(
+    db: AsyncSession,
+    *,
+    project_id: int | None = None,
+    environment_id: int | None = None,
+    actor_user_id: int | None = None,
+    action: str | None = None,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> tuple[list[AuditLog], int]:
+    filters = []
+    if project_id is not None:
+        filters.append(AuditLog.project_id == project_id)
+    if environment_id is not None:
+        filters.append(AuditLog.environment_id == environment_id)
+    if actor_user_id is not None:
+        filters.append(AuditLog.actor_user_id == actor_user_id)
+    if action:
+        filters.append(AuditLog.action == action)
+    if entity_type:
+        filters.append(AuditLog.entity_type == entity_type)
+    if entity_id:
+        filters.append(AuditLog.entity_id == entity_id)
+    if from_ts is not None:
+        filters.append(AuditLog.created_at >= from_ts)
+    if to_ts is not None:
+        filters.append(AuditLog.created_at <= to_ts)
+
+    total = (await db.execute(select(func.count()).select_from(AuditLog).where(*filters))).scalar_one()
+    rows = (
+        await db.execute(
+            select(AuditLog)
+            .where(*filters)
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+    ).scalars().all()
+    return rows, total
+
+
+def serialize_audit_export(
+    rows: list[AuditLog],
+    *,
+    export_format: Literal["json", "csv"],
+) -> str:
+    payload = [
+        {
+            "id": row.id,
+            "tenant_id": row.tenant_id,
+            "project_id": row.project_id,
+            "environment_id": row.environment_id,
+            "actor_user_id": row.actor_user_id,
+            "action": row.action,
+            "entity_type": row.entity_type,
+            "entity_id": row.entity_id,
+            "payload_json": row.payload_json,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]
+    if export_format == "json":
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "id",
+            "tenant_id",
+            "project_id",
+            "environment_id",
+            "actor_user_id",
+            "action",
+            "entity_type",
+            "entity_id",
+            "payload_json",
+            "created_at",
+        ],
+    )
+    writer.writeheader()
+    for item in payload:
+        writer.writerow({**item, "payload_json": json.dumps(item["payload_json"], sort_keys=True)})
+    return output.getvalue()
+
+
+def build_compliance_evidence_bundle(
+    rows: list[AuditLog],
+    *,
+    export_format: Literal["json", "csv"],
+    scope: Literal["privileged", "migration"],
+    signing_key: str,
+) -> dict[str, object]:
+    exported = serialize_audit_export(rows, export_format=export_format)
+    digest = hashlib.sha256(exported.encode("utf-8")).hexdigest()
+    signature = hmac.new(signing_key.encode("utf-8"), digest.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {
+        "scope": scope,
+        "export_format": export_format,
+        "record_count": len(rows),
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "hash_sha256": digest,
+        "signature_hmac_sha256": signature,
+        "data": exported,
+    }

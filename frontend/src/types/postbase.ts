@@ -153,6 +153,12 @@ export interface PostBaseEnvironmentOverview {
   key_count: number;
   usage_points_total: number;
   recent_audit_events: number;
+  quota_state: 'healthy' | 'warning' | 'soft_limited' | 'hard_limited';
+  quota_warning_triggered: boolean;
+  quota_soft_limited: boolean;
+  quota_hard_limited: boolean;
+  quota_utilization: number;
+  degradation_mode: 'none' | 'controlled' | 'blocked';
 }
 
 export interface PostBaseProjectOverview {
@@ -165,6 +171,31 @@ export interface PostBaseProjectOverview {
   usage_points_total: number;
   recent_audit_events: number;
   environments: PostBaseEnvironmentOverview[];
+}
+
+export interface PostBaseAuditLogRead {
+  id: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  payload_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface PostBaseAuditExportRead {
+  export_format: 'json' | 'csv';
+  total: number;
+  data: string;
+}
+
+export interface PostBaseComplianceEvidenceBundleRead {
+  scope: 'privileged' | 'migration';
+  export_format: 'json' | 'csv';
+  record_count: number;
+  generated_at: string;
+  hash_sha256: string;
+  signature_hmac_sha256: string;
+  data: string;
 }
 
 
