@@ -12,6 +12,7 @@ CERTIFICATION_STATES: dict[tuple[str, str], ProviderCertificationState] = {
     ("auth", "local-postgres"): ProviderCertificationState.CERTIFIED,
     ("auth", "oidc-certified"): ProviderCertificationState.CERTIFIED,
     ("data", "postgres-native"): ProviderCertificationState.CERTIFIED,
+    ("data", "postgres-compat"): ProviderCertificationState.CERTIFIED,
     ("storage", "s3-compatible"): ProviderCertificationState.CERTIFIED,
     ("storage", "local-disk"): ProviderCertificationState.EXPERIMENTAL,
     ("functions", "celery-runtime"): ProviderCertificationState.CERTIFIED,

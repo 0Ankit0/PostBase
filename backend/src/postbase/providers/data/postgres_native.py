@@ -10,6 +10,7 @@ from sqlmodel import select
 from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.data.contracts import DataMutationPayload, DataMutationResult, DataQueryRequest, DataQueryResult
 from src.postbase.domain.enums import CapabilityKey, PolicyMode
+from src.postbase.providers.data.adapter_translation import CanonicalDataQueryTranslator
 from src.postbase.domain.models import DataNamespace, TableDefinition
 from src.postbase.platform.access import PostBaseAccessContext, validate_identifier
 from src.postbase.platform.contracts import CapabilityProfile, ProviderHealth
@@ -28,6 +29,9 @@ TYPE_MAP = {
 
 
 class PostgresNativeDataProvider:
+    def __init__(self) -> None:
+        self._translator = CanonicalDataQueryTranslator()
+
     def profile(self) -> CapabilityProfile:
         return CapabilityProfile(
             capability=CapabilityKey.DATA,
@@ -42,34 +46,23 @@ class PostgresNativeDataProvider:
     async def query_rows(self, context: PostBaseAccessContext, payload: DataQueryRequest) -> DataQueryResult:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         namespace_row, table_row = await self._resolve_table(db, context, payload.namespace, payload.table)
-        limit = min(max(payload.limit, 1), 500)
-        offset = max(payload.offset, 0)
+        translated = self._translator.translate(
+            filters=payload.filters,
+            sort=payload.sort,
+            pagination=payload.pagination,
+        )
 
         sql = f"SELECT * FROM {self._qualified_table(db, namespace_row.physical_schema, table_row.table_name)}"
         params: dict[str, Any] = {}
         sql = self._apply_policy_read(context, table_row, sql, params)
 
-        has_where = " WHERE " in sql
-        for idx, (column_name, column_value) in enumerate(payload.filters.items()):
-            safe_column_name = validate_identifier(column_name, "Column")
-            param_name = f"filter_{idx}"
-            sql += f' {"AND" if has_where else "WHERE"} "{safe_column_name}" = :{param_name}'
-            params[param_name] = column_value
-            has_where = True
-
-        if payload.order_by:
-            safe_order_column = validate_identifier(payload.order_by, "Order by column")
-            direction = payload.order_direction.lower()
-            if direction not in {"asc", "desc"}:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="order_direction must be 'asc' or 'desc'",
-                )
-            sql += f' ORDER BY "{safe_order_column}" {direction.upper()}'
-
+        if translated.where_sql:
+            sql += translated.where_sql.replace(" WHERE ", " AND ", 1) if " WHERE " in sql else translated.where_sql
+        sql += translated.order_sql
         sql += " LIMIT :limit OFFSET :offset"
-        params["limit"] = limit
-        params["offset"] = offset
+        params.update(translated.params)
+        params["limit"] = translated.pagination.limit
+        params["offset"] = translated.pagination.offset
 
         result = await db.execute(text(sql), params)
         await record_usage(

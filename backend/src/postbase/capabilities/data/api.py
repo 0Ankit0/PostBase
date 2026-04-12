@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
-
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.contracts import CAPABILITY_ERROR_RESPONSES, FacadeStatusResponse
@@ -12,6 +10,17 @@ from src.postbase.capabilities.data.service import DataFacade
 
 router = APIRouter(prefix="/data", tags=["postbase-data"])
 
+SUPPORTED_FILTER_OPERATORS = {"eq", "neq", "gt", "gte", "lt", "lte", "in", "nin", "contains", "icontains", "is_null"}
+
+
+def _validate_query_payload(payload: DataQueryRequest) -> None:
+    for clause in payload.filters:
+        if clause.op not in SUPPORTED_FILTER_OPERATORS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported filter operator '{clause.op}'",
+            )
+
 
 @router.post("/query", response_model=DataQueryResult, responses=CAPABILITY_ERROR_RESPONSES)
 async def query_rows(
@@ -19,10 +28,11 @@ async def query_rows(
     context=Depends(get_access_context),
     provider=Depends(get_data_provider),
 ) -> DataQueryResult:
+    _validate_query_payload(payload)
     return await provider.query_rows(context, payload)
 
 
-@router.get("/{namespace}/{table}", response_model=PaginatedResponse[dict[str, Any]], responses=CAPABILITY_ERROR_RESPONSES)
+@router.get("/{namespace}/{table}", response_model=PaginatedResponse[dict[str, object]], responses=CAPABILITY_ERROR_RESPONSES)
 async def list_rows(
     namespace: str,
     table: str,
@@ -30,7 +40,7 @@ async def list_rows(
     limit: int = Query(default=25, ge=1, le=100),
     context=Depends(get_access_context),
     provider=Depends(get_data_provider),
-) -> PaginatedResponse[dict[str, Any]]:
+) -> PaginatedResponse[dict[str, object]]:
     return await provider.list_rows(context, namespace, table, skip=skip, limit=limit)
 
 

@@ -156,3 +156,18 @@ async def test_postbase_control_plane_and_auth_data_flow(client, db_session):
     queried_rows = query_rows_response.json()["rows"]
     assert len(queried_rows) == 1
     assert queried_rows[0]["title"] == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_data_query_rejects_unsupported_filter_operator(client):
+    response = await client.post(
+        "/api/v1/data/query",
+        json={
+            "namespace": "app",
+            "table": "posts",
+            "filters": [{"field": "title", "op": "regex", "value": "h.*"}],
+            "pagination": {"limit": 10, "offset": 0},
+            "sort": [],
+        },
+    )
+    assert response.status_code in {400, 422}
