@@ -1391,6 +1391,9 @@ async def test_switchover_cutover_records_execution_state_and_retirement_strateg
             "target_provider_key": "s3-compatible",
             "strategy": "cutover",
             "retirement_strategy": "immediate",
+            "canary_traffic_percent": 20,
+            "canary_health_checkpoint_count": 2,
+            "auto_abort_error_rate": 0.2,
         },
     )
     assert plan_response.status_code == 200, plan_response.text
@@ -1405,9 +1408,12 @@ async def test_switchover_cutover_records_execution_state_and_retirement_strateg
     assert payload["retirement_strategy"] == "immediate"
     assert payload["execution_state_json"]["phase"] == "completed"
     assert payload["execution_state_json"]["retirement"]["status"] == "retired"
+    assert payload["execution_state_json"]["canary"]["aborted"] is False
+    assert len(payload["execution_state_json"]["canary"]["checkpoints"]) == 2
     assert payload["execution_state_json"]["completed_phases"] == [
         "preflight",
         "stage_target",
+        "canary",
         "validate_cutover",
         "retire_old_binding",
     ]
@@ -1502,3 +1508,69 @@ async def test_switchover_resume_after_failure_restores_from_rollback_checkpoint
     assert payload["execution_state_json"]["phase"] == "completed"
     assert payload["execution_state_json"]["retirement"]["status"] == "deferred"
     assert payload["execution_state_json"]["rollback_checkpoint"]["required"] is False
+
+
+@pytest.mark.asyncio
+async def test_switchover_canary_auto_abort_rolls_back(client, db_session):
+    signup_response = await client.post(
+        "/api/v1/auth/signup/?set_cookie=false",
+        json={"username": "canary_abort_owner", "email": "canary_abort@example.com", "password": "OwnerPass123!", "confirm_password": "OwnerPass123!"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup_response.json()['access']}"}
+    owner = (await db_session.execute(select(User).where(User.email == "canary_abort@example.com"))).scalars().first()
+    tenant = Tenant(name="CanaryAbort", slug="canary-abort", description="Canary abort tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+    project_response = await client.post("/api/v1/projects", headers=owner_headers, json={"tenant_id": encode_id(tenant.id), "name": "Canary Abort", "slug": "canary-abort", "description": "Canary abort project"})
+    environment_response = await client.post(f"/api/v1/projects/{project_response.json()['id']}/environments", headers=owner_headers, json={"name": "Prod", "slug": "prod-canary-abort", "stage": "production"})
+    environment_id = environment_response.json()["id"]
+    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()
+    storage_binding = next(item for item in binding_rows if item["capability_key"] == "storage")
+    plan_response = await client.post(
+        f"/api/v1/bindings/{storage_binding['id']}/switchovers",
+        headers=owner_headers,
+        json={"target_provider_key": "s3-compatible", "canary_traffic_percent": 10, "canary_health_checkpoint_count": 2, "auto_abort_error_rate": 0.05, "simulated_canary_error_rate": 0.2},
+    )
+    execute_response = await client.post(f"/api/v1/switchovers/{plan_response.json()['id']}/execute", headers=owner_headers)
+    assert execute_response.status_code == 200, execute_response.text
+    payload = execute_response.json()
+    assert payload["status"] == "failed"
+    assert payload["execution_state_json"]["canary"]["aborted"] is True
+    assert payload["execution_state_json"]["phase"] == "rollback_complete"
+
+
+@pytest.mark.asyncio
+async def test_manual_rollback_endpoint_uses_stored_checkpoint(client, db_session):
+    signup_response = await client.post(
+        "/api/v1/auth/signup/?set_cookie=false",
+        json={"username": "manual_rollback_owner", "email": "manual_rollback@example.com", "password": "OwnerPass123!", "confirm_password": "OwnerPass123!"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup_response.json()['access']}"}
+    owner = (await db_session.execute(select(User).where(User.email == "manual_rollback@example.com"))).scalars().first()
+    tenant = Tenant(name="ManualRollback", slug="manual-rollback", description="Manual rollback tenant", owner_id=owner.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    db_session.add(TenantMember(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.OWNER, is_active=True))
+    await db_session.commit()
+    project_response = await client.post("/api/v1/projects", headers=owner_headers, json={"tenant_id": encode_id(tenant.id), "name": "Manual Rollback", "slug": "manual-rollback", "description": "Manual rollback project"})
+    environment_response = await client.post(f"/api/v1/projects/{project_response.json()['id']}/environments", headers=owner_headers, json={"name": "Prod", "slug": "prod-manual-rollback", "stage": "production"})
+    environment_id = environment_response.json()["id"]
+    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()
+    storage_binding = next(item for item in binding_rows if item["capability_key"] == "storage")
+    plan_response = await client.post(
+        f"/api/v1/bindings/{storage_binding['id']}/switchovers",
+        headers=owner_headers,
+        json={"target_provider_key": "s3-compatible"},
+    )
+    switchover_db_id = decode_id_or_404(plan_response.json()["id"])
+    switchover_row = await db_session.get(SwitchoverPlan, switchover_db_id)
+    binding_row = await db_session.get(CapabilityBinding, decode_id_or_404(storage_binding["id"]))
+    previous_provider = binding_row.provider_catalog_entry_id
+    binding_row.provider_catalog_entry_id = switchover_row.target_provider_catalog_entry_id
+    switchover_row.execution_state_json = {"rollback_checkpoint": {"required": True, "previous_provider_catalog_entry_id": previous_provider}}
+    await db_session.commit()
+    rollback_response = await client.post(f"/api/v1/switchovers/{plan_response.json()['id']}/rollback", headers=owner_headers)
+    assert rollback_response.status_code == 200, rollback_response.text
+    assert rollback_response.json()["status"] == "rolled_back"

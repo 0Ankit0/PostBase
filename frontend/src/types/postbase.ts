@@ -116,11 +116,29 @@ export interface PostBaseSwitchoverRead {
   target_provider_catalog_entry_id: string;
   strategy: string;
   retirement_strategy?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'rolled_back';
   execution_detail: string;
   execution_state_json?: Record<string, unknown>;
+  canary_traffic_percent?: number;
+  canary_health_checkpoint_count?: number;
+  auto_abort_error_rate?: number;
   created_at: string;
   completed_at: string | null;
+}
+
+export interface PostBaseCertificationRunRead {
+  id: string;
+  capability_binding_id: string;
+  switchover_plan_id: string | null;
+  test_status: 'pending' | 'running' | 'passed' | 'failed';
+  approval_state: 'draft' | 'approved' | 'rejected' | 'published';
+  test_summary: string;
+  evidence_refs_json: Record<string, unknown>;
+  requested_by_user_id: string | null;
+  approved_by_user_id: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PostBaseProviderHealthRead {

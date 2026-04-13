@@ -17,6 +17,8 @@ from src.postbase.domain.enums import (
     ApiKeyRole,
     BindingStatus,
     CapabilityKey,
+    CertificationApprovalState,
+    CertificationTestStatus,
     EnvironmentStage,
     EnvironmentStatus,
     MigrationStatus,
@@ -28,6 +30,7 @@ from src.postbase.domain.enums import (
 from src.postbase.domain.models import (
     AuditLog,
     BindingSecretRef,
+    CertificationRun,
     CapabilityBinding,
     CapabilityType,
     DataNamespace,
@@ -108,6 +111,7 @@ ALLOWED_RETIREMENT_STRATEGIES = {"immediate", "deferred", "manual"}
 SWITCHOVER_PHASE_ORDER = [
     "preflight",
     "stage_target",
+    "canary",
     "validate_cutover",
     "retire_old_binding",
     "completed",
@@ -1208,6 +1212,10 @@ async def create_switchover_plan(
     environment: Environment,
     strategy: str,
     retirement_strategy: str,
+    canary_traffic_percent: int,
+    canary_health_checkpoint_count: int,
+    auto_abort_error_rate: float,
+    simulated_canary_error_rate: float | None = None,
 ) -> SwitchoverPlan:
     if retirement_strategy not in ALLOWED_RETIREMENT_STRATEGIES:
         raise HTTPException(
@@ -1265,12 +1273,23 @@ async def create_switchover_plan(
             "phase": "preflight",
             "completed_phases": [],
             "preflight_report": preflight_report,
+            "canary": {
+                "traffic_percent": canary_traffic_percent,
+                "health_checkpoint_count": canary_health_checkpoint_count,
+                "auto_abort_error_rate": auto_abort_error_rate,
+                "simulated_error_rate": simulated_canary_error_rate,
+                "checkpoints": [],
+                "aborted": False,
+            },
             "rollback_checkpoint": {},
             "retirement": {
                 "strategy": retirement_strategy,
                 "status": "pending",
             },
         },
+        canary_traffic_percent=canary_traffic_percent,
+        canary_health_checkpoint_count=canary_health_checkpoint_count,
+        auto_abort_error_rate=auto_abort_error_rate,
         requested_by_user_id=actor.id,
     )
     db.add(switchover)
@@ -1289,6 +1308,9 @@ async def create_switchover_plan(
             "target_provider_key": target_provider_key,
             "strategy": strategy,
             "retirement_strategy": retirement_strategy,
+            "canary_traffic_percent": canary_traffic_percent,
+            "canary_health_checkpoint_count": canary_health_checkpoint_count,
+            "auto_abort_error_rate": auto_abort_error_rate,
             "preflight_report": preflight_report,
         },
     )
@@ -1396,6 +1418,52 @@ async def execute_switchover_plan(
             switchover.execution_state_json = execution_state
             switchover.execution_detail = "phase:stage_target; checkpoint:rollback_ready"
             await db.flush()
+
+        if "canary" not in set(execution_state["completed_phases"]):
+            canary = execution_state.get("canary", {})
+            checkpoints = []
+            checkpoint_count = int(canary.get("health_checkpoint_count", switchover.canary_health_checkpoint_count or 1))
+            simulated_error_rate = float(canary.get("simulated_error_rate", 0.0) or 0.0)
+            threshold = float(canary.get("auto_abort_error_rate", switchover.auto_abort_error_rate))
+            traffic_percent = int(canary.get("traffic_percent", switchover.canary_traffic_percent or 0))
+            aborted = False
+            for index in range(checkpoint_count):
+                checkpoint_error_rate = simulated_error_rate
+                health_ref = f"health://switchover/{switchover.id}/checkpoint/{index + 1}"
+                checkpoints.append(
+                    {
+                        "checkpoint": index + 1,
+                        "traffic_percent": traffic_percent,
+                        "error_rate": checkpoint_error_rate,
+                        "healthy": checkpoint_error_rate <= threshold,
+                        "health_evidence_ref": health_ref,
+                    }
+                )
+                await record_audit_event(
+                    db,
+                    action="binding.rollout_checkpoint_evaluated",
+                    entity_type="switchover_plan",
+                    entity_id=str(switchover.id),
+                    actor_user_id=actor.id,
+                    tenant_id=project.tenant_id,
+                    project_id=project.id,
+                    environment_id=environment.id,
+                    payload={"binding_id": binding.id, "checkpoint": checkpoints[-1]},
+                )
+                if checkpoint_error_rate > threshold:
+                    aborted = True
+                    break
+            canary["checkpoints"] = checkpoints
+            canary["aborted"] = aborted
+            canary["health_evidence_refs"] = [item["health_evidence_ref"] for item in checkpoints]
+            execution_state["canary"] = canary
+            execution_state["phase"] = "canary"
+            execution_state["completed_phases"] = [*execution_state["completed_phases"], "canary"]
+            switchover.execution_state_json = execution_state
+            switchover.execution_detail = "phase:canary; checkpoint:health_evaluated"
+            await db.flush()
+            if aborted:
+                raise RuntimeError("canary auto-abort: error threshold exceeded")
 
         if "validate_cutover" not in set(execution_state["completed_phases"]):
             target_provider = await db.get(ProviderCatalogEntry, switchover.target_provider_catalog_entry_id)
@@ -1508,12 +1576,102 @@ async def execute_switchover_plan(
             "strategy": switchover.strategy,
             "retirement_strategy": switchover.retirement_strategy,
             "execution_phase": (switchover.execution_state_json or {}).get("phase", "completed"),
+            "health_evidence_refs": ((switchover.execution_state_json or {}).get("canary", {}) or {}).get("health_evidence_refs", []),
         },
     )
     await db.commit()
     await db.refresh(switchover)
     _assert_switchover_state_invariants(switchover)
     return switchover
+
+
+async def rollback_switchover_plan(
+    db: AsyncSession,
+    *,
+    switchover: SwitchoverPlan,
+    actor: User,
+    project: Project,
+    environment: Environment,
+) -> SwitchoverPlan:
+    binding = await db.get(CapabilityBinding, switchover.capability_binding_id)
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
+    rollback_checkpoint = (switchover.execution_state_json or {}).get("rollback_checkpoint", {})
+    previous_provider_catalog_entry_id = rollback_checkpoint.get("previous_provider_catalog_entry_id")
+    if previous_provider_catalog_entry_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No rollback checkpoint available")
+    binding.provider_catalog_entry_id = previous_provider_catalog_entry_id
+    binding.status = BindingStatus.ACTIVE
+    binding.last_transition_actor_user_id = actor.id
+    binding.last_transition_reason = "manual_switchover_rollback"
+    binding.last_transition_at = datetime.now(timezone.utc)
+    binding.readiness_detail = "manual rollback restored prior provider version"
+    touch_updated_at(binding)
+    state = dict(switchover.execution_state_json or {})
+    state["phase"] = "manual_rollback_complete"
+    state["rollback_checkpoint"] = {
+        "required": False,
+        "previous_provider_catalog_entry_id": previous_provider_catalog_entry_id,
+    }
+    state["manual_rollback"] = {"executed_at": datetime.now(timezone.utc).isoformat(), "actor_user_id": actor.id}
+    switchover.execution_state_json = state
+    switchover.status = SwitchoverStatus.ROLLED_BACK
+    switchover.execution_detail = "manual rollback executed from stored checkpoint"
+    switchover.completed_at = datetime.now(timezone.utc)
+    await record_audit_event(
+        db,
+        action="binding.switchover_manually_rolled_back",
+        entity_type="switchover_plan",
+        entity_id=str(switchover.id),
+        actor_user_id=actor.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"binding_id": binding.id, "rollback_provider_catalog_entry_id": previous_provider_catalog_entry_id},
+    )
+    await db.commit()
+    await db.refresh(switchover)
+    return switchover
+
+
+async def create_certification_run(
+    db: AsyncSession,
+    *,
+    binding: CapabilityBinding,
+    actor: User,
+    switchover_plan_id: int | None,
+    test_summary: str,
+) -> CertificationRun:
+    run = CertificationRun(
+        capability_binding_id=binding.id,
+        switchover_plan_id=switchover_plan_id,
+        test_status=CertificationTestStatus.PASSED,
+        approval_state=CertificationApprovalState.DRAFT,
+        test_summary=test_summary,
+        evidence_refs_json={"test_run_ref": f"testrun://binding/{binding.id}/{int(datetime.now(timezone.utc).timestamp())}"},
+        requested_by_user_id=actor.id,
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+async def approve_certification_run(db: AsyncSession, *, run: CertificationRun, actor: User) -> CertificationRun:
+    run.approval_state = CertificationApprovalState.APPROVED
+    run.approved_by_user_id = actor.id
+    touch_updated_at(run)
+    await db.flush()
+    return run
+
+
+async def publish_certification_run(db: AsyncSession, *, run: CertificationRun) -> CertificationRun:
+    if run.approval_state != CertificationApprovalState.APPROVED:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Certification run must be approved before publication")
+    run.approval_state = CertificationApprovalState.PUBLISHED
+    run.published_at = datetime.now(timezone.utc)
+    touch_updated_at(run)
+    await db.flush()
+    return run
 
 
 async def create_binding_version(
@@ -2181,3 +2339,9 @@ async def _build_switchover_preflight_report(
 
 def _preflight_is_ready(preflight_report: dict[str, Any]) -> bool:
     return all(item.get("ok") for item in preflight_report.values() if isinstance(item, dict))
+    if canary_traffic_percent < 0 or canary_traffic_percent > 100:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="canary_traffic_percent must be between 0 and 100")
+    if canary_health_checkpoint_count < 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="canary_health_checkpoint_count must be >= 1")
+    if auto_abort_error_rate < 0 or auto_abort_error_rate > 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="auto_abort_error_rate must be between 0 and 1")

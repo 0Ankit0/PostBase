@@ -9,6 +9,8 @@ from sqlmodel import Field, SQLModel
 from src.postbase.domain.enums import (
     ApiKeyRole,
     BindingStatus,
+    CertificationApprovalState,
+    CertificationTestStatus,
     EnvironmentStatus,
     EnvironmentStage,
     MigrationStatus,
@@ -269,9 +271,32 @@ class SwitchoverPlan(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, default=dict),
     )
+    canary_traffic_percent: int = Field(default=0)
+    canary_health_checkpoint_count: int = Field(default=1)
+    auto_abort_error_rate: float = Field(default=0.1)
     requested_by_user_id: int | None = Field(default=None, foreign_key="user.id")
     created_at: datetime = Field(default_factory=utcnow)
     completed_at: datetime | None = Field(default=None)
+
+
+class CertificationRun(SQLModel, table=True):
+    __tablename__ = "postbase_certification_run"
+
+    id: int | None = Field(default=None, primary_key=True)
+    capability_binding_id: int = Field(foreign_key="postbase_capability_binding.id", index=True)
+    switchover_plan_id: int | None = Field(default=None, foreign_key="postbase_switchover_plan.id", index=True)
+    test_status: CertificationTestStatus = Field(default=CertificationTestStatus.PENDING)
+    approval_state: CertificationApprovalState = Field(default=CertificationApprovalState.DRAFT)
+    test_summary: str = Field(default="", max_length=500)
+    evidence_refs_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
+    requested_by_user_id: int | None = Field(default=None, foreign_key="user.id")
+    approved_by_user_id: int | None = Field(default=None, foreign_key="user.id")
+    published_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class AuthUser(SQLModel, table=True):

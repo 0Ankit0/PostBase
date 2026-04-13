@@ -9,6 +9,8 @@ from src.apps.iam.utils.hashid import encode_id
 from src.postbase.domain.enums import (
     ApiKeyRole,
     BindingStatus,
+    CertificationApprovalState,
+    CertificationTestStatus,
     EnvironmentStage,
     EnvironmentStatus,
     PolicyMode,
@@ -132,6 +134,10 @@ class SwitchoverCreate(BaseModel):
     target_provider_key: str
     strategy: str = "cutover"
     retirement_strategy: str = "manual"
+    canary_traffic_percent: int = 0
+    canary_health_checkpoint_count: int = 1
+    auto_abort_error_rate: float = 0.1
+    simulated_canary_error_rate: float | None = None
 
 
 class SwitchoverRead(EncodedModel):
@@ -143,6 +149,9 @@ class SwitchoverRead(EncodedModel):
     status: SwitchoverStatus
     execution_detail: str
     execution_state_json: dict[str, object]
+    canary_traffic_percent: int
+    canary_health_checkpoint_count: int
+    auto_abort_error_rate: float
     created_at: datetime
     completed_at: datetime | None
 
@@ -212,6 +221,36 @@ class SecretRefRead(EncodedModel):
     @field_serializer("environment_id")
     def serialize_environment_id(self, value: int) -> str:
         return encode_id(value)
+
+
+class CertificationRunCreate(BaseModel):
+    switchover_id: str | None = None
+    test_summary: str = "adapter verification requested"
+
+
+class CertificationRunRead(EncodedModel):
+    id: int
+    capability_binding_id: int
+    switchover_plan_id: int | None
+    test_status: CertificationTestStatus
+    approval_state: CertificationApprovalState
+    test_summary: str
+    evidence_refs_json: dict[str, Any]
+    requested_by_user_id: int | None
+    approved_by_user_id: int | None
+    published_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer(
+        "capability_binding_id",
+        "switchover_plan_id",
+        "requested_by_user_id",
+        "approved_by_user_id",
+        check_fields=False,
+    )
+    def serialize_related_id(self, value: int | None) -> str | None:
+        return encode_id(value) if value else None
 
 
 class AuditLogRead(EncodedModel):
