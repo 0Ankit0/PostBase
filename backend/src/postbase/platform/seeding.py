@@ -70,6 +70,11 @@ async def seed_provider_catalog(db: AsyncSession) -> None:
                         "optional_features": profile.optional_features,
                         "validation_checks": profile.validation_checks,
                         "limits": profile.limits,
+                        "conformance": {
+                            "state": "pending",
+                            "badge": "unknown",
+                            "last_report_path": "backend/artifacts/provider-conformance.json",
+                        },
                     },
                 )
             )

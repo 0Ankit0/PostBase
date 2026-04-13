@@ -61,6 +61,85 @@ jobs:
       - name: Run backend unit and API tests
         run: uv run pytest tests/unit tests/integration/api
 
+  postbase-contract-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install uv
+        run: pip install uv
+      - name: Sync dependencies
+        run: uv sync --all-groups
+      - name: Run PostBase integration contracts
+        run: uv run pytest tests/integration/postbase/test_sdk_compat_contracts.py tests/integration/postbase/test_provider_conformance_harness.py
+
+  sdk-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install uv
+        run: pip install uv
+      - name: Sync dependencies
+        run: uv sync --all-groups --project backend
+      - name: Export OpenAPI schema
+        run: uv run --project backend python backend/scripts/export_openapi.py
+      - name: Generate SDK clients
+        run: uv run --project backend python backend/scripts/generate_sdks.py
+      - name: Upload versioned SDK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: postbase-sdks-${{ github.ref_name }}-${{ github.run_number }}
+          path: |
+            backend/openapi/openapi.json
+            sdk/typescript/src/client.ts
+            sdk/python/postbase_sdk/client.py
+
+  provider-conformance:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install uv
+        run: pip install uv
+      - name: Sync dependencies
+        run: uv sync --all-groups
+      - name: Run provider conformance harness
+        run: uv run python scripts/run_provider_conformance.py
+      - name: Upload conformance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-conformance-${{ github.run_number }}
+          path: backend/artifacts/provider-conformance.json
+
+  schema-breaking-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install uv
+        run: pip install uv
+      - name: Sync dependencies
+        run: uv sync --all-groups --project backend
+      - name: Export OpenAPI schema
+        run: uv run --project backend python backend/scripts/export_openapi.py
+      - name: Verify schema breaking gate
+        run: python .github/scripts/check_openapi_breaking.py
+
   frontend-lint:
     runs-on: ubuntu-latest
     defaults:
@@ -149,6 +228,10 @@ jobs:
     needs:
       - backend-lint
       - backend-tests
+      - postbase-contract-tests
+      - sdk-artifacts
+      - provider-conformance
+      - schema-breaking-gate
       - frontend-lint
       - frontend-typecheck
       - frontend-tests
