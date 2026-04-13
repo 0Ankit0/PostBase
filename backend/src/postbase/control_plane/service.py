@@ -1712,7 +1712,17 @@ async def _validate_binding_activation_prerequisites(
     if missing_secret_kinds:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot activate binding: missing or expired secrets [{missing_secret_detail}]",
+            detail={
+                "code": "binding_missing_required_secrets",
+                "message": "Cannot activate binding: missing or expired secrets",
+                "constraints": {"required_secret_kinds": provider.metadata_json.get("required_secret_kinds", [])},
+                "remediation": [
+                    "Create or rotate the missing secret kinds for this provider binding.",
+                    "Re-link the updated secret refs to the binding and retry activation.",
+                ],
+                "missing_secret_kinds": missing_secret_kinds,
+                "missing_secret_detail": missing_secret_detail,
+            },
         )
     capability_type = await db.get(CapabilityType, binding.capability_type_id)
     if capability_type is not None and CapabilityKey(capability_type.key) == CapabilityKey.STORAGE:
@@ -1723,14 +1733,29 @@ async def _validate_binding_activation_prerequisites(
         if missing_ops:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot activate storage binding: provider missing operations [{', '.join(missing_ops)}]",
+                detail={
+                    "code": "binding_provider_operation_gap",
+                    "message": "Cannot activate storage binding: provider missing required operations",
+                    "missing_operations": missing_ops,
+                    "remediation": [
+                        "Select a certified provider that supports all required storage operations.",
+                        "Or update provider adapter capabilities before activation.",
+                    ],
+                },
             )
         limits = profile.limits or {}
         ttl_limit = int(limits.get("max_signed_url_ttl_seconds", 0))
         if ttl_limit <= 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Cannot activate storage binding: max_signed_url_ttl_seconds must be configured",
+                detail={
+                    "code": "binding_storage_ttl_unconfigured",
+                    "message": "Cannot activate storage binding: max_signed_url_ttl_seconds must be configured",
+                    "remediation": [
+                        "Set provider limits.max_signed_url_ttl_seconds to a positive integer.",
+                        "Re-run capability validation after updating provider metadata.",
+                    ],
+                },
             )
 
 

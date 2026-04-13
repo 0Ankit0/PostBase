@@ -859,6 +859,13 @@ export function shouldRequireProductionConfirmation(stage: PostBaseEnvironmentRe
 
 const READINESS_REMEDIATION_RULES: Array<{ keywords: string[]; remediation: ReadinessRemediation }> = [
   {
+    keywords: ['missing_secret_kinds', 'unsupported region', 'required operations'],
+    remediation: {
+      reason: 'Provider constraints are unmet',
+      remediation: 'Match provider constraints (secret kinds/region/operations) and retry binding activation.',
+    },
+  },
+  {
     keywords: ['secret', 'credential', 'key'],
     remediation: {
       reason: 'Credentials are missing or invalid',
@@ -1192,7 +1199,12 @@ function BindingForm({
         >
           Create binding
         </Button>
-        <div>Known catalog pairs: {providerCatalog.map((item) => `${item.capability_key}/${item.provider_key}`).join(' · ')}</div>
+        <div>Known catalog pairs: {providerCatalog.map((item) => {
+          const conformance = (item as PostBaseProviderCatalogRead).metadata_json?.conformance as Record<string, string> | undefined;
+          const badge = conformance?.badge ?? 'unknown';
+          const state = conformance?.state ?? 'pending';
+          return `${item.capability_key}/${item.provider_key} [${badge}:${state}]`;
+        }).join(' · ')}</div>
 
         <div className="space-y-2">
           {bindings.map((binding) => (
@@ -1385,13 +1397,22 @@ function extractMutationError(error: unknown): string {
   if (isPermissionDenied(error)) {
     return 'Permission restricted: your role cannot execute this operation.';
   }
-  const axiosError = error as AxiosError<{ detail?: string | { message?: string } }>;
+  const axiosError = error as AxiosError<{ detail?: string | { message?: string; remediation?: string[]; missing_secret_kinds?: string[] } }>;
   if (axiosError?.response?.data?.detail) {
     if (typeof axiosError.response.data.detail === 'string') {
       return axiosError.response.data.detail;
     }
     if (axiosError.response.data.detail.message) {
-      return axiosError.response.data.detail.message;
+      const remediation = axiosError.response.data.detail.remediation;
+      const missingKinds = axiosError.response.data.detail.missing_secret_kinds;
+      const extras: string[] = [];
+      if (Array.isArray(missingKinds) && missingKinds.length > 0) {
+        extras.push(`Missing secret kinds: ${missingKinds.join(', ')}`);
+      }
+      if (Array.isArray(remediation) && remediation.length > 0) {
+        extras.push(`Next steps: ${remediation.join(' ')}`);
+      }
+      return [axiosError.response.data.detail.message, ...extras].join(' · ');
     }
   }
 
