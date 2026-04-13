@@ -21,6 +21,8 @@ from src.postbase.control_plane.schemas import (
     BindingRead,
     BindingStatusUpdate,
     CapabilityHealthReport,
+    CertificationRunCreate,
+    CertificationRunRead,
     ComplianceEvidenceBundleRead,
     EnvironmentApiKeyCreate,
     EnvironmentApiKeyIssued,
@@ -55,8 +57,12 @@ from src.postbase.control_plane.service import (
     build_capability_health_report,
     build_project_overview,
     create_switchover_plan,
+    create_certification_run,
     create_binding_version,
     execute_switchover_plan,
+    rollback_switchover_plan,
+    approve_certification_run,
+    publish_certification_run,
     create_table_metadata,
     create_environment_for_project,
     create_namespace_metadata,
@@ -85,6 +91,7 @@ from src.postbase.capabilities.events.webhook_jobs import replay_dead_letter_web
 from src.postbase.domain.models import (
     AuditLog,
     BindingSecretRef,
+    CertificationRun,
     CapabilityBinding,
     CapabilityType,
     Environment,
@@ -336,6 +343,10 @@ async def _create_switchover_execute(
         environment=environment,
         strategy=payload.strategy,
         retirement_strategy=payload.retirement_strategy,
+        canary_traffic_percent=payload.canary_traffic_percent,
+        canary_health_checkpoint_count=payload.canary_health_checkpoint_count,
+        auto_abort_error_rate=payload.auto_abort_error_rate,
+        simulated_canary_error_rate=payload.simulated_canary_error_rate,
     )
 
 
@@ -712,6 +723,27 @@ async def execute_switchover(
     return result
 
 
+@router.post("/switchovers/{switchover_id}/rollback", response_model=SwitchoverRead)
+async def rollback_switchover(
+    switchover_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SwitchoverPlan:
+    switchover, _, environment, project = await _load_switchover_context(
+        db,
+        switchover_id=switchover_id,
+        current_user=current_user,
+        action="switchovers",
+    )
+    return await rollback_switchover_plan(
+        db,
+        switchover=switchover,
+        actor=current_user,
+        project=project,
+        environment=environment,
+    )
+
+
 @router.get("/bindings/{binding_id}/switchovers", response_model=PaginatedResponse[SwitchoverRead])
 async def list_binding_switchovers(
     binding_id: str,
@@ -780,6 +812,142 @@ async def get_switchover(
         min_role=TenantRole.MEMBER,
     )
     return switchover
+
+
+@router.get("/bindings/{binding_id}/certifications/runs", response_model=PaginatedResponse[CertificationRunRead])
+async def list_certification_runs(
+    binding_id: str,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PaginatedResponse[CertificationRunRead]:
+    binding, environment, _project = await _load_binding_environment_and_project(
+        db, binding_id=binding_id, current_user=current_user, action="bindings"
+    )
+    await ensure_environment_access(db, environment=environment, user_id=current_user.id, min_role=TenantRole.ADMIN)
+    total = (
+        await db.execute(
+            select(func.count()).select_from(CertificationRun).where(CertificationRun.capability_binding_id == binding.id)
+        )
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            select(CertificationRun)
+            .where(CertificationRun.capability_binding_id == binding.id)
+            .order_by(CertificationRun.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+    ).scalars().all()
+    return PaginatedResponse[CertificationRunRead].create(
+        items=[CertificationRunRead.model_validate(item) for item in rows],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.post("/bindings/{binding_id}/certifications/runs", response_model=CertificationRunRead, status_code=status.HTTP_201_CREATED)
+async def create_binding_certification_run(
+    binding_id: str,
+    payload: CertificationRunCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CertificationRun:
+    binding, environment, project = await _load_binding_environment_and_project(
+        db, binding_id=binding_id, current_user=current_user, action="bindings"
+    )
+    switchover_plan_id = decode_id_or_404(payload.switchover_id) if payload.switchover_id else None
+    run = await create_certification_run(
+        db,
+        binding=binding,
+        actor=current_user,
+        switchover_plan_id=switchover_plan_id,
+        test_summary=payload.test_summary,
+    )
+    await record_audit_event(
+        db,
+        action="binding.certification_run_created",
+        entity_type="certification_run",
+        entity_id=str(run.id),
+        actor_user_id=current_user.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"binding_id": binding.id, "switchover_plan_id": switchover_plan_id, "test_status": run.test_status.value},
+    )
+    await db.commit()
+    await db.refresh(run)
+    return run
+
+
+@router.post("/certifications/runs/{run_id}/approve", response_model=CertificationRunRead)
+async def approve_binding_certification_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CertificationRun:
+    run_db_id = decode_id_or_404(run_id)
+    run = await db.get(CertificationRun, run_db_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Certification run not found")
+    binding = await db.get(CapabilityBinding, run.capability_binding_id)
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
+    environment = await db.get(Environment, binding.environment_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user, action="bindings")
+    run = await approve_certification_run(db, run=run, actor=current_user)
+    await record_audit_event(
+        db,
+        action="binding.certification_run_approved",
+        entity_type="certification_run",
+        entity_id=str(run.id),
+        actor_user_id=current_user.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"binding_id": binding.id},
+    )
+    await db.commit()
+    await db.refresh(run)
+    return run
+
+
+@router.post("/certifications/runs/{run_id}/publish", response_model=CertificationRunRead)
+async def publish_binding_certification_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CertificationRun:
+    run_db_id = decode_id_or_404(run_id)
+    run = await db.get(CertificationRun, run_db_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Certification run not found")
+    binding = await db.get(CapabilityBinding, run.capability_binding_id)
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Binding not found")
+    environment = await db.get(Environment, binding.environment_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    project = await _authorize_environment_mutation(db, environment=environment, current_user=current_user, action="bindings")
+    run = await publish_certification_run(db, run=run)
+    await record_audit_event(
+        db,
+        action="binding.certification_run_published",
+        entity_type="certification_run",
+        entity_id=str(run.id),
+        actor_user_id=current_user.id,
+        tenant_id=project.tenant_id,
+        project_id=project.id,
+        environment_id=environment.id,
+        payload={"binding_id": binding.id, "published_at": run.published_at.isoformat() if run.published_at else None},
+    )
+    await db.commit()
+    await db.refresh(run)
+    return run
 
 
 @router.post("/bindings/{binding_id}/status", response_model=BindingRead)

@@ -74,3 +74,18 @@ class SwitchoverStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    ROLLED_BACK = "rolled_back"
+
+
+class CertificationTestStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+
+
+class CertificationApprovalState(str, Enum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PUBLISHED = "published"

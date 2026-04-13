@@ -27,6 +27,7 @@ import type {
   PostBaseWebhookEndpointRead,
   PostBaseAuditLogRead,
   PostBaseComplianceEvidenceBundleRead,
+  PostBaseCertificationRunRead,
 } from '@/types';
 
 export function resolvePostBaseContextKey(tenantId: string | null | undefined): string {
@@ -172,6 +173,10 @@ export interface PostBaseSwitchoverCreatePayload {
   target_provider_key: string;
   strategy?: string;
   retirement_strategy?: string;
+  canary_traffic_percent?: number;
+  canary_health_checkpoint_count?: number;
+  auto_abort_error_rate?: number;
+  simulated_canary_error_rate?: number;
 }
 
 export function usePostBaseProjectOverview(projectId: string | undefined) {
@@ -407,6 +412,80 @@ export function useExecutePostBaseSwitchover(bindingId: string | undefined) {
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments'] });
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'projects'] });
       await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'environments', undefined, 'bindings'] });
+    },
+  });
+}
+
+export function useRollbackPostBaseSwitchover(bindingId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  const queryClient = useQueryClient();
+  const queryKey = ['postbase', tenantId, 'bindings', bindingId, 'switchovers', 0, 25] as const;
+  return useMutation({
+    mutationFn: async (switchoverId: string) => {
+      const response = await apiClient.post<PostBaseSwitchoverRead>(`/switchovers/${switchoverId}/rollback`);
+      return response.data;
+    },
+    onSuccess: async (switchover) => {
+      queryClient.setQueryData<PaginatedResponse<PostBaseSwitchoverRead>>(queryKey, (current) =>
+        updatePaginatedItems(current, (items) => items.map((item) => (item.id === switchover.id ? switchover : item))),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'projects'] });
+    },
+  });
+}
+
+export function usePostBaseCertificationRuns(bindingId: string | undefined, params?: PostBasePaginationParams) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  const pagination = normalizePaginationParams(params);
+  return useQuery({
+    queryKey: ['postbase', tenantId, 'bindings', bindingId, 'certifications', pagination.skip, pagination.limit],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<PostBaseCertificationRunRead>>(
+        `/bindings/${bindingId}/certifications/runs`,
+        { params: pagination },
+      );
+      return response.data;
+    },
+    enabled: Boolean(bindingId),
+  });
+}
+
+export function useCreatePostBaseCertificationRun(bindingId: string | undefined) {
+  const tenantId = useAuthStore((state) => resolvePostBaseContextKey(state.tenant?.id));
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { switchover_id?: string; test_summary?: string }) => {
+      const response = await apiClient.post<PostBaseCertificationRunRead>(`/bindings/${bindingId}/certifications/runs`, payload);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase', tenantId, 'bindings', bindingId, 'certifications'] });
+    },
+  });
+}
+
+export function useApprovePostBaseCertificationRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (runId: string) => {
+      const response = await apiClient.post<PostBaseCertificationRunRead>(`/certifications/runs/${runId}/approve`);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
+    },
+  });
+}
+
+export function usePublishPostBaseCertificationRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (runId: string) => {
+      const response = await apiClient.post<PostBaseCertificationRunRead>(`/certifications/runs/${runId}/publish`);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['postbase'] });
     },
   });
 }

@@ -14,6 +14,11 @@ import {
   useDeactivatePostBaseSecret,
   useDrainPostBaseWebhooks,
   useExecutePostBaseSwitchover,
+  useRollbackPostBaseSwitchover,
+  usePostBaseCertificationRuns,
+  useCreatePostBaseCertificationRun,
+  useApprovePostBaseCertificationRun,
+  usePublishPostBaseCertificationRun,
   usePostBaseFunctionDeployments,
   usePostBaseFunctionRevisions,
   usePostBaseFunctionSchedules,
@@ -1278,8 +1283,17 @@ function BindingSwitchoverRow({
   const [targetProvider, setTargetProvider] = useState('');
   const [strategy, setStrategy] = useState('cutover');
   const [retirementStrategy, setRetirementStrategy] = useState('manual');
+  const [canaryTrafficPercent, setCanaryTrafficPercent] = useState('10');
+  const [canaryCheckpointCount, setCanaryCheckpointCount] = useState('2');
+  const [autoAbortErrorRate, setAutoAbortErrorRate] = useState('0.10');
+  const [simulatedCanaryErrorRate, setSimulatedCanaryErrorRate] = useState('0');
   const createSwitchover = useCreatePostBaseSwitchover(bindingId);
   const executeSwitchover = useExecutePostBaseSwitchover(bindingId);
+  const rollbackSwitchover = useRollbackPostBaseSwitchover(bindingId);
+  const certificationRuns = usePostBaseCertificationRuns(bindingId);
+  const createCertificationRun = useCreatePostBaseCertificationRun(bindingId);
+  const approveCertificationRun = useApprovePostBaseCertificationRun();
+  const publishCertificationRun = usePublishPostBaseCertificationRun();
   const { data } = usePostBaseBindingSwitchovers(bindingId);
   const pending = (data?.items ?? []).find((item) => item.status === 'pending' || item.status === 'failed');
   const preflight = pending?.execution_state_json?.preflight_report as Record<string, { ok?: boolean; detail?: string }> | undefined;
@@ -1294,11 +1308,23 @@ function BindingSwitchoverRow({
           <Input value={targetProvider} onChange={(event) => setTargetProvider(event.target.value)} placeholder="Target provider key" />
           <Input value={strategy} onChange={(event) => setStrategy(event.target.value)} placeholder="Strategy" />
           <Input value={retirementStrategy} onChange={(event) => setRetirementStrategy(event.target.value)} placeholder="Retirement strategy" />
+          <Input value={canaryTrafficPercent} onChange={(event) => setCanaryTrafficPercent(event.target.value)} placeholder="Canary traffic %" />
+          <Input value={canaryCheckpointCount} onChange={(event) => setCanaryCheckpointCount(event.target.value)} placeholder="Health checkpoints" />
+          <Input value={autoAbortErrorRate} onChange={(event) => setAutoAbortErrorRate(event.target.value)} placeholder="Auto-abort error rate" />
+          <Input value={simulatedCanaryErrorRate} onChange={(event) => setSimulatedCanaryErrorRate(event.target.value)} placeholder="Simulated error rate" />
           <Button
             size="sm"
             onClick={() => {
               if (!confirmProductionOperation(isProductionEnvironment, 'switchover_plan')) return;
-              createSwitchover.mutate({ target_provider_key: targetProvider, strategy, retirement_strategy: retirementStrategy });
+              createSwitchover.mutate({
+                target_provider_key: targetProvider,
+                strategy,
+                retirement_strategy: retirementStrategy,
+                canary_traffic_percent: Number(canaryTrafficPercent),
+                canary_health_checkpoint_count: Number(canaryCheckpointCount),
+                auto_abort_error_rate: Number(autoAbortErrorRate),
+                simulated_canary_error_rate: Number(simulatedCanaryErrorRate),
+              });
             }}
             disabled={createSwitchover.isPending || !targetProvider}
           >
@@ -1360,6 +1386,47 @@ function BindingSwitchoverRow({
       )}
 
       <MutationError mutationError={executeSwitchover.error} operation="switchover_execute" />
+      <div className="rounded border border-gray-200 p-2 text-xs">
+        <p className="font-medium text-gray-800">Certification workflow</p>
+        <p>Latest run: {(certificationRuns.data?.items ?? [])[0]?.approval_state ?? 'none'}.</p>
+        <div className="mt-2 flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => createCertificationRun.mutate({ switchover_id: pending.id, test_summary: 'Canary validation evidence recorded' })}
+          >
+            Create test run
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              const latest = (certificationRuns.data?.items ?? [])[0];
+              if (latest) approveCertificationRun.mutate(latest.id);
+            }}
+          >
+            Approve
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              const latest = (certificationRuns.data?.items ?? [])[0];
+              if (latest) publishCertificationRun.mutate(latest.id);
+            }}
+          >
+            Publish
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => rollbackSwitchover.mutate(pending.id)}
+            disabled={rollbackSwitchover.isPending}
+          >
+            One-click rollback
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
