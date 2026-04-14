@@ -78,7 +78,7 @@ async def deliver_webhook(
             error_text="transient upstream failure",
         )
 
-    if "fail" in target_ref:
+    if "fail" in target_ref and "transient-fail" not in target_ref:
         latency_ms = int((perf_counter() - start) * 1000)
         return WebhookDeliveryResult(
             status="failed",

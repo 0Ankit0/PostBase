@@ -5,9 +5,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
+
+def _serialize_iso_datetime(value: datetime) -> str:
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
 ISODateTime = Annotated[
     datetime,
-    PlainSerializer(lambda value: value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), return_type=str),
+    PlainSerializer(_serialize_iso_datetime, return_type=str),
 ]
 
 

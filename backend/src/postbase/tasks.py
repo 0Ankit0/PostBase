@@ -8,7 +8,7 @@ from celery import shared_task
 from sqlmodel import select
 
 from src.apps.core.celery_app import celery_app  # noqa: F401
-from src.db.session import async_session_factory
+from src.db import session as db_session_module
 from src.postbase.capabilities.events.webhook_jobs import process_due_webhook_jobs
 from src.postbase.capabilities.storage.service import run_storage_retention_for_due_environments
 from src.postbase.domain.models import EventChannel, WebhookDeliveryJob
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 async def drain_due_webhook_jobs(limit: int = 200, *, environment_id: int | None = None) -> int:
-    async with async_session_factory() as db:
+    async with db_session_module.async_session_factory() as db:
         now = datetime.now(timezone.utc)
         due_job_filters = [
             WebhookDeliveryJob.status.in_(["pending", "retrying"]),
@@ -63,7 +63,7 @@ def process_webhook_delivery_jobs_task(limit: int = 200) -> int:
 def storage_retention_sweep_task(limit: int = 200) -> dict[str, int]:
     try:
         async def _run() -> dict[str, int]:
-            async with async_session_factory() as db:
+            async with db_session_module.async_session_factory() as db:
                 result = await run_storage_retention_for_due_environments(db, limit=limit)
                 await db.commit()
                 return result

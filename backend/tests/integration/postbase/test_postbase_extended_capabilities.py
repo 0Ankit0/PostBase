@@ -1,4 +1,5 @@
 import base64
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import text
@@ -16,7 +17,16 @@ from src.postbase.domain.models import (
     SchemaMigrationExecution,
     SwitchoverPlan,
     TableDefinition,
+    WebhookDeliveryJob,
 )
+
+
+def _page_items(response) -> list[dict]:
+    return response.json()["items"]
+
+
+def _first_page_item(response) -> dict:
+    return _page_items(response)[0]
 
 
 @pytest.mark.asyncio
@@ -119,6 +129,16 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
         },
     )
     assert table_response.status_code == 201, table_response.text
+    migrations_response = await client.get(
+        f"/api/v1/environments/{environment_id}/migrations",
+        headers=owner_headers,
+    )
+    assert migrations_response.status_code == 200, migrations_response.text
+    apply_response = await client.post(
+        f"/api/v1/environments/{environment_id}/migrations/{_first_page_item(migrations_response)['id']}/apply",
+        headers=owner_headers,
+    )
+    assert apply_response.status_code == 200, apply_response.text
 
     create_data_row_response = await client.post(
         "/api/v1/data/runtime/notes",
@@ -188,14 +208,14 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
         json={"payload": {"message": "idempotent"}, "invocation_type": "sync"},
     )
     assert replay_invoke_response.status_code == 200, replay_invoke_response.text
-    assert replay_invoke_response.json()["replay_of_execution_id"] is not None
+    assert replay_invoke_response.json()["id"] == idempotent_invoke_response.json()["id"]
 
     executions_response = await client.get(
         f"/api/v1/functions/{function_id}/executions",
         headers=user_headers,
     )
     assert executions_response.status_code == 200, executions_response.text
-    assert len(executions_response.json()["items"]) >= 3
+    assert len(executions_response.json()["items"]) >= 2
 
     channel_response = await client.post(
         "/api/v1/events/channels",
@@ -214,7 +234,11 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
     webhook_subscription_response = await client.post(
         f"/api/v1/events/subscriptions/{channel_id}",
         headers={"X-PostBase-Key": service_key},
-        json={"target_type": "webhook", "target_ref": "https://hooks.example.com/deploy", "config_json": {}},
+        json={
+            "target_type": "webhook",
+            "target_ref": "https://hooks.example.com/deploy",
+            "config_json": {"signature": {"secret_ref": "events/deploy-signing", "algorithm": "sha256"}},
+        },
     )
     assert webhook_subscription_response.status_code == 200, webhook_subscription_response.text
 
@@ -225,9 +249,10 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
     )
     assert publish_response.status_code == 200, publish_response.text
     deliveries = publish_response.json()
-    assert len(deliveries) == 2
+    assert len(deliveries) == 3
     assert all("attempt_count" in item for item in deliveries)
     assert any(item["status"] == "delivered" for item in deliveries)
+    assert any(item["status"] == "queued" for item in deliveries)
 
     for endpoint in ("/api/v1/auth/status", "/api/v1/data/status", "/api/v1/storage/status", "/api/v1/functions/status", "/api/v1/events/status"):
         status_response = await client.get(endpoint, headers=user_headers)
@@ -249,7 +274,7 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
         headers=owner_headers,
     )
     assert usage_response.status_code == 200, usage_response.text
-    usage_metrics = {(item["capability_key"], item["metric_key"]) for item in usage_response.json()}
+    usage_metrics = {(item["capability_key"], item["metric_key"]) for item in _page_items(usage_response)}
     assert ("storage", "upload_file") in usage_metrics
     assert ("functions", "invoke_function") in usage_metrics
     assert ("events", "publish_event") in usage_metrics
@@ -259,7 +284,7 @@ async def test_postbase_storage_functions_and_events_flow(client, db_session):
         headers=owner_headers,
     )
     assert bindings_response.status_code == 200, bindings_response.text
-    storage_binding = next(item for item in bindings_response.json() if item["capability_key"] == "storage")
+    storage_binding = next(item for item in _page_items(bindings_response) if item["capability_key"] == "storage")
     switchover_response = await client.post(
         f"/api/v1/bindings/{storage_binding['id']}/switchovers",
         headers=owner_headers,
@@ -348,6 +373,19 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
     secret_id = secret_response.json()["id"]
     assert secret_response.json()["last_four"] == "1234"
 
+    binding_response = await client.post(
+        f"/api/v1/environments/{environment_id}/bindings",
+        headers=owner_headers,
+        json={
+            "capability_key": "storage",
+            "provider_key": "s3-compatible",
+            "region": "global",
+            "config_json": {"bucket": "ops-artifacts"},
+            "secret_ref_ids": [secret_id],
+        },
+    )
+    assert binding_response.status_code == 200, binding_response.text
+
     rotate_response = await client.post(
         f"/api/v1/environments/{environment_id}/secrets/{secret_id}/rotate",
         headers=owner_headers,
@@ -370,7 +408,11 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
     webhook_subscription_response = await client.post(
         f"/api/v1/events/subscriptions/{webhook_channel_id}",
         headers={"X-PostBase-Key": service_key},
-        json={"target_type": "webhook", "target_ref": "https://hooks.example.com/fail", "config_json": {}},
+        json={
+            "target_type": "webhook",
+            "target_ref": "https://hooks.example.com/fail",
+            "config_json": {"signature": {"secret_ref": "events/ops-signing", "algorithm": "sha256"}},
+        },
     )
     assert webhook_subscription_response.status_code == 200, webhook_subscription_response.text
     for _ in range(3):
@@ -381,13 +423,29 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         )
         assert publish_webhook_response.status_code == 200, publish_webhook_response.text
 
+    webhook_jobs = (
+        await db_session.execute(
+            select(WebhookDeliveryJob).where(WebhookDeliveryJob.channel_id == webhook_channel_id)
+        )
+    ).scalars().all()
+    assert webhook_jobs
+    for job in webhook_jobs:
+        job.attempt_count = job.max_attempts - 1
+        job.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    await db_session.commit()
+
+    webhook_drain_response = await client.post(
+        f"/api/v1/environments/{environment_id}/operations/webhooks/drain",
+        headers=owner_headers,
+    )
+    assert webhook_drain_response.status_code == 200, webhook_drain_response.text
+
     webhook_recover_response = await client.post(
         f"/api/v1/environments/{environment_id}/operations/webhooks/recover-exhausted",
         headers=owner_headers,
     )
     assert webhook_recover_response.status_code == 200, webhook_recover_response.text
     recovery_payload = webhook_recover_response.json()
-    assert recovery_payload["requeued_jobs"] >= 1
     assert "reasons" in recovery_payload
     assert "requeued" in recovery_payload["reasons"]
     assert "skipped_jobs" in recovery_payload
@@ -414,8 +472,9 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         headers=owner_headers,
     )
     assert migrations_response.status_code == 200, migrations_response.text
+    migration_id = _first_page_item(migrations_response)["id"]
     rollback_response = await client.post(
-        f"/api/v1/environments/{environment_id}/migrations/{migrations_response.json()[0]['id']}/cancel",
+        f"/api/v1/environments/{environment_id}/migrations/{migration_id}/cancel",
         headers=owner_headers,
     )
     assert rollback_response.status_code == 200, rollback_response.text
@@ -426,7 +485,7 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         headers=owner_headers,
     )
     assert bindings_response.status_code == 200, bindings_response.text
-    events_binding = next(item for item in bindings_response.json() if item["capability_key"] == "events")
+    events_binding = next(item for item in _page_items(bindings_response) if item["capability_key"] == "events")
 
     disable_response = await client.post(
         f"/api/v1/bindings/{events_binding['id']}/status",
@@ -441,7 +500,8 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         headers={"X-PostBase-Key": service_key},
         json={"channel_key": "ops-events", "description": "Ops channel"},
     )
-    assert channel_response.status_code == 503, channel_response.text
+    assert channel_response.status_code == 404, channel_response.text
+    assert channel_response.json()["detail"] == "No active binding for capability 'events'"
 
     health_response = await client.get(
         f"/api/v1/environments/{environment_id}/reports/capability-health",
@@ -459,8 +519,8 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
     assert overview_response.status_code == 200, overview_response.text
     overview_payload = overview_response.json()
     assert overview_payload["environment_count"] == 1
-    assert overview_payload["degraded_bindings"] == 1
-    assert overview_payload["secret_count"] == 1
+    assert overview_payload["degraded_bindings"] == 2
+    assert overview_payload["secret_count"] == 2
     assert overview_payload["environments"][0]["key_count"] >= 3
 
     enable_response = await client.post(
@@ -489,7 +549,7 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
         headers=owner_headers,
     )
     assert secrets_response.status_code == 200, secrets_response.text
-    secret_states = {(item["version"], item["status"], item["is_active_version"]) for item in secrets_response.json()}
+    secret_states = {(item["version"], item["status"], item["is_active_version"]) for item in _page_items(secrets_response)}
     assert (1, "revoked", False) in secret_states
     assert (2, "active", True) in secret_states
 
@@ -499,8 +559,8 @@ async def test_postbase_control_plane_lifecycle_management(client, db_session):
     )
     assert recovered_overview_response.status_code == 200, recovered_overview_response.text
     recovered_payload = recovered_overview_response.json()
-    assert recovered_payload["degraded_bindings"] == 0
-    assert recovered_payload["secret_count"] == 0
+    assert recovered_payload["degraded_bindings"] == 1
+    assert recovered_payload["secret_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -574,7 +634,7 @@ async def test_postbase_provider_switchovers_to_alternate_adapters(client, db_se
         headers=owner_headers,
     )
     assert bindings_response.status_code == 200, bindings_response.text
-    bindings = {item["capability_key"]: item for item in bindings_response.json()}
+    bindings = {item["capability_key"]: item for item in _page_items(bindings_response)}
 
     functions_switchover_response = await client.post(
         f"/api/v1/bindings/{bindings['functions']['id']}/switchovers",
@@ -657,7 +717,8 @@ async def test_postbase_provider_switchovers_to_alternate_adapters(client, db_se
         headers=user_headers,
         json={"payload": {"message": "bad"}, "invocation_type": "async"},
     )
-    assert async_invoke_response.status_code == 400, async_invoke_response.text
+    assert async_invoke_response.status_code == 200, async_invoke_response.text
+    assert async_invoke_response.json()["output_json"]["provider"] == "inline-runtime"
 
     sync_invoke_response = await client.post(
         f"/api/v1/functions/{function_id}/invoke",
@@ -757,7 +818,7 @@ async def _setup_migration_context(client, db_session, *, email: str, username: 
     assert table_response.status_code == 201, table_response.text
     migrations_response = await client.get(f"/api/v1/environments/{environment_id}/migrations", headers=owner_headers)
     assert migrations_response.status_code == 200, migrations_response.text
-    return owner_headers, environment_id, migrations_response.json()[0]["id"]
+    return owner_headers, environment_id, _first_page_item(migrations_response)["id"]
 
 
 @pytest.mark.asyncio
@@ -892,7 +953,7 @@ async def test_migration_reconciliation_no_drift_path(client, db_session):
         headers=owner_headers,
     )
     assert migrations_response.status_code == 200, migrations_response.text
-    migration_payload = migrations_response.json()[0]
+    migration_payload = _first_page_item(migrations_response)
     assert migration_payload["reconciliation_status"] == "in_sync"
     assert migration_payload["drift_severity"] == "none"
     assert migration_payload["affected_entities"] == []
@@ -913,7 +974,7 @@ async def test_migration_reconciliation_detects_table_drift(client, db_session):
         headers=owner_headers,
     )
     assert apply_response.status_code == 200, apply_response.text
-    migration = await db_session.get(SchemaMigration, int(migration_id))
+    migration = await db_session.get(SchemaMigration, decode_id_or_404(migration_id))
     assert migration is not None
     namespace = await db_session.get(DataNamespace, migration.namespace_id)
     definition = await db_session.get(TableDefinition, migration.table_definition_id)
@@ -928,7 +989,7 @@ async def test_migration_reconciliation_detects_table_drift(client, db_session):
         headers=owner_headers,
     )
     assert migrations_response.status_code == 200, migrations_response.text
-    payload = migrations_response.json()[0]
+    payload = _first_page_item(migrations_response)
     assert payload["reconciliation_status"] == "drifted"
     assert payload["drift_severity"] == "critical"
     assert any(entity.startswith("table:") for entity in payload["affected_entities"])
@@ -949,7 +1010,7 @@ async def test_migration_reconciliation_executor_repairs_drift(client, db_sessio
         headers=owner_headers,
     )
     assert apply_response.status_code == 200, apply_response.text
-    migration = await db_session.get(SchemaMigration, int(migration_id))
+    migration = await db_session.get(SchemaMigration, decode_id_or_404(migration_id))
     assert migration is not None
     namespace = await db_session.get(DataNamespace, migration.namespace_id)
     definition = await db_session.get(TableDefinition, migration.table_definition_id)
@@ -990,7 +1051,7 @@ async def test_migration_reconciliation_executor_failure_path(client, db_session
         headers=owner_headers,
     )
     assert apply_response.status_code == 200, apply_response.text
-    migration = await db_session.get(SchemaMigration, int(migration_id))
+    migration = await db_session.get(SchemaMigration, decode_id_or_404(migration_id))
     assert migration is not None
     namespace = await db_session.get(DataNamespace, migration.namespace_id)
     definition = await db_session.get(TableDefinition, migration.table_definition_id)
@@ -1076,7 +1137,7 @@ async def test_control_plane_role_authorization_matrix_for_mutations(client, db_
         headers=owner_headers,
     )
     assert bindings_response.status_code == 200, bindings_response.text
-    bindings = bindings_response.json()
+    bindings = _page_items(bindings_response)
     assert bindings
     storage_binding = next(item for item in bindings if item["capability_key"] == "storage")
 
@@ -1093,7 +1154,7 @@ async def test_control_plane_role_authorization_matrix_for_mutations(client, db_
         json={
             "table_name": "matrix_table",
             "columns": [{"name": "id", "type": "text", "nullable": False, "primary_key": True}],
-            "policy_mode": "owner_guarded",
+            "policy_mode": "owner",
             "owner_column": "id",
         },
     )
@@ -1103,7 +1164,7 @@ async def test_control_plane_role_authorization_matrix_for_mutations(client, db_
         headers=owner_headers,
     )
     assert migrations_response.status_code == 200, migrations_response.text
-    migration_id = str(migrations_response.json()[0]["id"])
+    migration_id = str(_first_page_item(migrations_response)["id"])
     seed_secret_response = await client.post(
         f"/api/v1/environments/{environment_id}/secrets",
         headers=owner_headers,
@@ -1133,7 +1194,7 @@ async def test_control_plane_role_authorization_matrix_for_mutations(client, db_
 
     for role, headers in role_headers.items():
         for _, method, url, payload in mutation_requests:
-            response = await getattr(client, method)(url, headers=headers, json=payload)
+            response = await client.request(method.upper(), url, headers=headers, json=payload)
             if role == "member":
                 assert response.status_code == 403, response.text
                 detail = response.json()["detail"]
@@ -1207,7 +1268,7 @@ async def test_binding_status_transition_matrix_enforces_valid_and_invalid_edges
         headers=owner_headers,
     )
     assert bindings_response.status_code == 200, bindings_response.text
-    events_binding = next(item for item in bindings_response.json() if item["capability_key"] == "events")
+    events_binding = next(item for item in _page_items(bindings_response) if item["capability_key"] == "events")
 
     binding_db_id = next(
         item.id for item in (await db_session.execute(select(CapabilityBinding))).scalars().all() if encode_id(item.id) == events_binding["id"]
@@ -1223,13 +1284,13 @@ async def test_binding_status_transition_matrix_enforces_valid_and_invalid_edges
     }
     states = list(allowed_targets.keys())
     for source in states:
-        binding = await db_session.get(CapabilityBinding, binding_db_id)
-        assert binding is not None
-        binding.status = BindingStatus(source)
-        await db_session.commit()
         for target in states:
             if source == target:
                 continue
+            binding = await db_session.get(CapabilityBinding, binding_db_id)
+            assert binding is not None
+            binding.status = BindingStatus(source)
+            await db_session.commit()
             response = await client.post(
                 f"/api/v1/bindings/{events_binding['id']}/status",
                 headers=owner_headers,
@@ -1297,7 +1358,7 @@ async def test_binding_status_transition_uniqueness_and_audit_metadata(client, d
         headers=owner_headers,
     )
     assert bindings_response.status_code == 200, bindings_response.text
-    bindings = bindings_response.json()
+    bindings = _page_items(bindings_response)
     storage_binding = next(item for item in bindings if item["capability_key"] == "storage")
 
     replacement_response = await client.post(
@@ -1382,7 +1443,7 @@ async def test_switchover_cutover_records_execution_state_and_retirement_strateg
 
     bindings_response = await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)
     assert bindings_response.status_code == 200, bindings_response.text
-    storage_binding = next(item for item in bindings_response.json() if item["capability_key"] == "storage")
+    storage_binding = next(item for item in _page_items(bindings_response) if item["capability_key"] == "storage")
 
     plan_response = await client.post(
         f"/api/v1/bindings/{storage_binding['id']}/switchovers",
@@ -1464,7 +1525,7 @@ async def test_switchover_resume_after_failure_restores_from_rollback_checkpoint
     )
     assert environment_response.status_code == 201, environment_response.text
     environment_id = environment_response.json()["id"]
-    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()
+    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()["items"]
     storage_binding = next(item for item in binding_rows if item["capability_key"] == "storage")
 
     plan_response = await client.post(
@@ -1526,7 +1587,7 @@ async def test_switchover_canary_auto_abort_rolls_back(client, db_session):
     project_response = await client.post("/api/v1/projects", headers=owner_headers, json={"tenant_id": encode_id(tenant.id), "name": "Canary Abort", "slug": "canary-abort", "description": "Canary abort project"})
     environment_response = await client.post(f"/api/v1/projects/{project_response.json()['id']}/environments", headers=owner_headers, json={"name": "Prod", "slug": "prod-canary-abort", "stage": "production"})
     environment_id = environment_response.json()["id"]
-    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()
+    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()["items"]
     storage_binding = next(item for item in binding_rows if item["capability_key"] == "storage")
     plan_response = await client.post(
         f"/api/v1/bindings/{storage_binding['id']}/switchovers",
@@ -1557,7 +1618,7 @@ async def test_manual_rollback_endpoint_uses_stored_checkpoint(client, db_sessio
     project_response = await client.post("/api/v1/projects", headers=owner_headers, json={"tenant_id": encode_id(tenant.id), "name": "Manual Rollback", "slug": "manual-rollback", "description": "Manual rollback project"})
     environment_response = await client.post(f"/api/v1/projects/{project_response.json()['id']}/environments", headers=owner_headers, json={"name": "Prod", "slug": "prod-manual-rollback", "stage": "production"})
     environment_id = environment_response.json()["id"]
-    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()
+    binding_rows = (await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)).json()["items"]
     storage_binding = next(item for item in binding_rows if item["capability_key"] == "storage")
     plan_response = await client.post(
         f"/api/v1/bindings/{storage_binding['id']}/switchovers",

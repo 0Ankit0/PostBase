@@ -175,7 +175,7 @@ async def test_storage_provider_switchover_tracks_copy_and_cutover_checkpoints(c
 
     bindings_response = await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)
     assert bindings_response.status_code == 200, bindings_response.text
-    storage_binding = next(item for item in bindings_response.json() if item["capability_key"] == "storage")
+    storage_binding = next(item for item in bindings_response.json()["items"] if item["capability_key"] == "storage")
 
     switchover_response = await client.post(
         f"/api/v1/bindings/{storage_binding['id']}/switchovers",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import timezone, datetime
 from typing import Any
 
@@ -144,6 +145,10 @@ def _assert_migration_state_invariants(migration: SchemaMigration) -> None:
             raise RuntimeError("migration invariant violated: applied migration must be in_sync with no drift")
     if migration.status == MigrationStatus.FAILED and migration.reconciliation_status != "drifted":
         raise RuntimeError("migration invariant violated: failed migration must be drifted")
+
+
+def _clone_json_state(state: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(state)
 
 
 def evaluate_quota_state(
@@ -917,10 +922,17 @@ async def apply_schema_migration(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canceled migration cannot be applied")
 
     execution = await _start_migration_execution(db, migration=migration, environment=environment)
+    migration_id = migration.id
+    execution_id = execution.id
+    table_definition_id = migration.table_definition_id
+    environment_id = environment.id
     definition = await db.get(TableDefinition, migration.table_definition_id)
     namespace = await db.get(DataNamespace, migration.namespace_id)
     provider = PostgresNativeDataProvider()
     table_created = False
+    qualified_table_name = None
+    if definition is not None and namespace is not None:
+        qualified_table_name = f'"{namespace.physical_schema}__{definition.table_name}"'
     try:
         migration.status = MigrationStatus.PENDING
         touch_updated_at(migration)
@@ -956,10 +968,9 @@ async def apply_schema_migration(
         await db.commit()
     except Exception as exc:
         await db.rollback()
-        if table_created and namespace is not None and definition is not None:
-            qualified = f'"{namespace.physical_schema}__{definition.table_name}"'
-            await db.execute(text(f"DROP TABLE IF EXISTS {qualified}"))
-        migration = await db.get(SchemaMigration, migration.id)
+        if table_created and qualified_table_name is not None:
+            await db.execute(text(f"DROP TABLE IF EXISTS {qualified_table_name}"))
+        migration = await db.get(SchemaMigration, migration_id)
         if migration is None:
             raise
         migration.status = MigrationStatus.FAILED
@@ -969,13 +980,19 @@ async def apply_schema_migration(
         migration.reconcile_error_text = str(exc)
         migration.last_reconciled_at = datetime.now(timezone.utc)
         touch_updated_at(migration)
-        definition = await db.get(TableDefinition, migration.table_definition_id)
+        definition = await db.get(TableDefinition, table_definition_id)
         if definition is not None:
             definition.status = "pending_migration"
             touch_updated_at(definition)
-        execution = await db.get(SchemaMigrationExecution, execution.id)
+        execution = await db.get(SchemaMigrationExecution, execution_id)
         if execution is None:
-            execution = await _start_migration_execution(db, migration=migration, environment=environment)
+            execution = SchemaMigrationExecution(
+                migration_id=migration_id,
+                environment_id=environment_id,
+                status=MigrationStatus.PENDING,
+            )
+            db.add(execution)
+            await db.flush()
         await _finish_migration_execution(db, execution=execution, status=MigrationStatus.FAILED, error_text=str(exc))
         await db.commit()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Migration apply failed: {exc}") from exc
@@ -1142,7 +1159,8 @@ async def refresh_migration_reconciliation_state(
     migration.reconciliation_status = reconciliation_status
     migration.drift_severity = drift_severity
     migration.drift_entities_json = affected_entities
-    migration.reconcile_error_text = ""
+    if reconciliation_status == "in_sync":
+        migration.reconcile_error_text = ""
     migration.last_reconciled_at = datetime.now(timezone.utc)
     touch_updated_at(migration)
     await db.flush()
@@ -1350,7 +1368,7 @@ async def execute_switchover_plan(
     if switchover.status not in {SwitchoverStatus.PENDING, SwitchoverStatus.RUNNING, SwitchoverStatus.FAILED}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Switchover cannot be resumed")
 
-    execution_state: dict[str, Any] = dict(switchover.execution_state_json or {})
+    execution_state: dict[str, Any] = _clone_json_state(switchover.execution_state_json or {})
     execution_state.setdefault("phase", "preflight")
     execution_state.setdefault("completed_phases", [])
     execution_state.setdefault("rollback_checkpoint", {})
@@ -1374,7 +1392,7 @@ async def execute_switchover_plan(
         rollback_checkpoint["required"] = False
         execution_state["phase"] = "preflight"
         execution_state["completed_phases"] = [phase for phase in execution_state["completed_phases"] if phase != "stage_target"]
-        switchover.execution_state_json = execution_state
+        switchover.execution_state_json = _clone_json_state(execution_state)
         switchover.execution_detail = "checkpoint rollback restored; ready to resume"
         switchover.status = SwitchoverStatus.RUNNING
         await db.flush()
@@ -1404,7 +1422,7 @@ async def execute_switchover_plan(
             execution_state["preflight_report"] = preflight_report
             execution_state["phase"] = "preflight"
             execution_state["completed_phases"] = [*execution_state["completed_phases"], "preflight"]
-            switchover.execution_state_json = execution_state
+            switchover.execution_state_json = _clone_json_state(execution_state)
             switchover.execution_detail = "phase:preflight; checkpoint:validated"
             await db.flush()
 
@@ -1430,7 +1448,7 @@ async def execute_switchover_plan(
             touch_updated_at(binding)
             execution_state["phase"] = "stage_target"
             execution_state["completed_phases"] = [*execution_state["completed_phases"], "stage_target"]
-            switchover.execution_state_json = execution_state
+            switchover.execution_state_json = _clone_json_state(execution_state)
             switchover.execution_detail = "phase:stage_target; checkpoint:rollback_ready"
             await db.flush()
 
@@ -1474,7 +1492,7 @@ async def execute_switchover_plan(
             execution_state["canary"] = canary
             execution_state["phase"] = "canary"
             execution_state["completed_phases"] = [*execution_state["completed_phases"], "canary"]
-            switchover.execution_state_json = execution_state
+            switchover.execution_state_json = _clone_json_state(execution_state)
             switchover.execution_detail = "phase:canary; checkpoint:health_evaluated"
             await db.flush()
             if aborted:
@@ -1503,7 +1521,7 @@ async def execute_switchover_plan(
             touch_updated_at(binding)
             execution_state["phase"] = "validate_cutover"
             execution_state["completed_phases"] = [*execution_state["completed_phases"], "validate_cutover"]
-            switchover.execution_state_json = execution_state
+            switchover.execution_state_json = _clone_json_state(execution_state)
             switchover.execution_detail = "phase:validate_cutover; checkpoint:active_on_target"
             await db.flush()
 
@@ -1519,7 +1537,7 @@ async def execute_switchover_plan(
             execution_state["retirement"] = retirement
             execution_state["phase"] = "retire_old_binding"
             execution_state["completed_phases"] = [*execution_state["completed_phases"], "retire_old_binding"]
-            switchover.execution_state_json = execution_state
+            switchover.execution_state_json = _clone_json_state(execution_state)
             switchover.execution_detail = f"phase:retire_old_binding; strategy:{retirement_strategy}; status:{retirement_status}"
             await db.flush()
 
@@ -1529,7 +1547,7 @@ async def execute_switchover_plan(
             "required": False,
             "previous_provider_catalog_entry_id": execution_state.get("rollback_checkpoint", {}).get("previous_provider_catalog_entry_id"),
         }
-        switchover.execution_state_json = execution_state
+        switchover.execution_state_json = _clone_json_state(execution_state)
         switchover.status = SwitchoverStatus.COMPLETED
         switchover.execution_detail = "switchover executed successfully with staged checkpoints"
         switchover.completed_at = datetime.now(timezone.utc)
@@ -1556,7 +1574,7 @@ async def execute_switchover_plan(
             "restored_provider_catalog_entry_id": previous_provider_catalog_entry_id,
             "restored_at": datetime.now(timezone.utc).isoformat(),
         }
-        switchover.execution_state_json = execution_state
+        switchover.execution_state_json = _clone_json_state(execution_state)
         switchover.status = SwitchoverStatus.FAILED
         switchover.execution_detail = f"rollback_complete:{exc}"
         switchover.completed_at = datetime.now(timezone.utc)
@@ -1622,14 +1640,14 @@ async def rollback_switchover_plan(
     binding.last_transition_at = datetime.now(timezone.utc)
     binding.readiness_detail = "manual rollback restored prior provider version"
     touch_updated_at(binding)
-    state = dict(switchover.execution_state_json or {})
+    state = _clone_json_state(switchover.execution_state_json or {})
     state["phase"] = "manual_rollback_complete"
     state["rollback_checkpoint"] = {
         "required": False,
         "previous_provider_catalog_entry_id": previous_provider_catalog_entry_id,
     }
     state["manual_rollback"] = {"executed_at": datetime.now(timezone.utc).isoformat(), "actor_user_id": actor.id}
-    switchover.execution_state_json = state
+    switchover.execution_state_json = _clone_json_state(state)
     switchover.status = SwitchoverStatus.ROLLED_BACK
     switchover.execution_detail = "manual rollback executed from stored checkpoint"
     switchover.completed_at = datetime.now(timezone.utc)

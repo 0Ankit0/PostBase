@@ -18,6 +18,12 @@ from src.postbase.domain.models import (
 )
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @pytest.mark.asyncio
 async def test_webhook_delivery_transient_failure_then_success(db_session):
     channel = EventChannel(environment_id=1, channel_key="retries", description="")
@@ -50,7 +56,7 @@ async def test_webhook_delivery_transient_failure_then_success(db_session):
     assert job.latest_response_code == 503
     assert len(job.attempt_history_json) == 1
     assert job.next_attempt_at is not None
-    first_delay_seconds = int((job.next_attempt_at - datetime.now(timezone.utc)).total_seconds())
+    first_delay_seconds = int((_as_utc(job.next_attempt_at) - datetime.now(timezone.utc)).total_seconds())
     assert 0 <= first_delay_seconds <= 1
 
     job.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)

@@ -306,6 +306,10 @@ async def replay_dead_letter_webhook_jobs(
             continue
 
         job.status = "retrying"
+        job.attempt_count = 0
+        job.latest_response_code = None
+        job.latest_latency_ms = None
+        job.delivered_at = None
         job.next_attempt_at = now
         job.error_text = "operator initiated replay from dead-letter queue"
         job.updated_at = now

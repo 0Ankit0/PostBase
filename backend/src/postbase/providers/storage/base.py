@@ -33,6 +33,12 @@ from src.postbase.platform.contracts import CapabilityProfile, ProviderHealth
 from src.postbase.platform.usage import record_usage
 
 
+def _ensure_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class StorageProviderBase:
     provider_key: str = "base"
 
@@ -160,7 +166,7 @@ class StorageProviderBase:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Signed URL grant not found")
         if grant.revoked_at is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Signed URL grant already revoked")
-        if grant.expires_at <= now:
+        if _ensure_utc_datetime(grant.expires_at) <= now:
             raise HTTPException(status_code=status.HTTP_410_GONE, detail="Signed URL grant expired")
         old_row = await self._require_file_access(db, context, grant.file_object_id)
         grant.revoked_at = now
