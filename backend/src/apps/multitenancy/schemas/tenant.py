@@ -102,5 +102,13 @@ class TenantInvitationResponse(BaseModel):
         return encode_id(value) if value is not None else None
 
 
+class MyTenantInvitationResponse(TenantInvitationResponse):
+    token: str
+    tenant_name: str
+    tenant_slug: str
+    tenant_description: str
+    tenant_is_active: bool
+
+
 class TenantWithMembersResponse(TenantResponse):
     members: list[TenantMemberResponse] = []

@@ -6,6 +6,8 @@ import { useAuthStore } from '@/store/auth-store';
 import { analytics } from '@/lib/analytics';
 import { TenantEvents } from '@/lib/analytics/events';
 import type {
+  InvitationStatus,
+  MyTenantInvitation,
   Tenant,
   TenantWithMembers,
   TenantCreate,
@@ -22,6 +24,12 @@ interface TenantsResponse {
   total: number;
   skip: number;
   limit: number;
+}
+
+interface TenantInvitationListParams {
+  skip?: number;
+  limit?: number;
+  status?: InvitationStatus;
 }
 
 export function useTenants(params?: { skip?: number; limit?: number }) {
@@ -141,7 +149,7 @@ export function useRemoveMember() {
   });
 }
 
-export function useTenantInvitations(tenantId: string, params?: { skip?: number; limit?: number }) {
+export function useTenantInvitations(tenantId: string, params?: TenantInvitationListParams) {
   return useQuery({
     queryKey: ['tenants', tenantId, 'invitations', params],
     queryFn: async () => {
@@ -152,6 +160,22 @@ export function useTenantInvitations(tenantId: string, params?: { skip?: number;
       return response.data;
     },
     enabled: !!tenantId,
+  });
+}
+
+export function useMyTenantInvitations(params?: TenantInvitationListParams) {
+  const { isAuthenticated } = useAuthStore();
+
+  return useQuery({
+    queryKey: ['tenant-invitations', 'me', params],
+    queryFn: async () => {
+      const response = await apiClient.get<PaginatedResponse<MyTenantInvitation>>(
+        '/tenants/invitations/me',
+        { params }
+      );
+      return response.data;
+    },
+    enabled: isAuthenticated,
   });
 }
 
@@ -189,7 +213,25 @@ export function useAcceptInvitation() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenants'] });
+      queryClient.invalidateQueries({ queryKey: ['tenant-invitations'] });
       analytics.capture(TenantEvents.TENANT_MEMBER_JOINED);
+    },
+  });
+}
+
+export function useDeclineInvitation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (token: string) => {
+      const response = await apiClient.post<TenantInvitation>('/tenants/invitations/decline', {
+        token,
+      });
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tenant-invitations'] });
+      analytics.capture(TenantEvents.TENANT_INVITATION_DECLINED);
     },
   });
 }

@@ -212,6 +212,15 @@ class _AccountTabState extends ConsumerState<_AccountTab> {
               .animate()
               .fadeIn(delay: 180.ms)
               .slideY(begin: 0.05),
+          const SizedBox(height: 16),
+          const _SectionHeader(label: 'Organizations'),
+          _PrivacyCard(
+            icon: Icons.group_add_outlined,
+            title: 'Pending Invitations',
+            subtitle: 'Review and respond to organization invitations.',
+            buttonLabel: 'View',
+            onTap: () => context.go(AppConstants.tenantInvitationsRoute),
+          ).animate().fadeIn(delay: 220.ms).slideY(begin: 0.05),
         ],
       ),
     );

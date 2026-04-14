@@ -49,6 +49,11 @@ class ApiEndpoints {
   static const String paymentInitiate = '/payments/initiate/';
   static const String paymentVerify = '/payments/verify/';
 
+  // Tenants / invitations
+  static const String myTenantInvitations = '/tenants/invitations/me';
+  static const String acceptTenantInvitation = '/tenants/invitations/accept';
+  static const String declineTenantInvitation = '/tenants/invitations/decline';
+
   // PostBase read-only mobile status endpoints
   static const String postBaseProjects = '/projects';
   static String postBaseProjectOverview(String projectId) =>

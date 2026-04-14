@@ -20,6 +20,7 @@ from src.apps.multitenancy.models.tenant import (
 from src.apps.iam.models.user import User
 from src.apps.multitenancy.schemas.tenant import (
     AcceptInvitationRequest,
+    MyTenantInvitationResponse,
     TenantCreate,
     TenantInvitationCreate,
     TenantInvitationResponse,
@@ -70,6 +71,41 @@ def _serialize_tenant_member_response(
         "role": response.role,
         "is_active": response.is_active,
         "joined_at": response.joined_at,
+    }
+
+
+def _serialize_tenant_invitation_response(
+    invitation: TenantInvitation | TenantInvitationResponse,
+) -> dict[str, object]:
+    response = (
+        invitation
+        if isinstance(invitation, TenantInvitationResponse)
+        else TenantInvitationResponse.model_validate(invitation)
+    )
+    return {
+        "id": response.id,
+        "tenant_id": response.tenant_id,
+        "email": response.email,
+        "role": response.role,
+        "status": response.status,
+        "invited_by": response.invited_by,
+        "expires_at": response.expires_at,
+        "created_at": response.created_at,
+        "accepted_at": response.accepted_at,
+    }
+
+
+def _serialize_my_tenant_invitation_response(
+    invitation: TenantInvitation,
+    tenant: Tenant,
+) -> dict[str, object]:
+    return {
+        **_serialize_tenant_invitation_response(invitation),
+        "token": invitation.token,
+        "tenant_name": tenant.name,
+        "tenant_slug": tenant.slug,
+        "tenant_description": tenant.description,
+        "tenant_is_active": tenant.is_active,
     }
 
 
@@ -552,6 +588,7 @@ async def list_invitations(
     tenant_id: str,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    status: InvitationStatus | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -559,49 +596,19 @@ async def list_invitations(
     tenant_db_id = decode_id_or_404(tenant_id)
     await _require_tenant_role(tenant_db_id, current_user, db, min_role=TenantRole.ADMIN)
 
-    total = (
-        await db.execute(
-            select(func.count(col(TenantInvitation.id))).where(
-                TenantInvitation.tenant_id == tenant_db_id
-            )
-        )
-    ).scalar_one()
+    total_query = select(func.count(col(TenantInvitation.id))).where(
+        TenantInvitation.tenant_id == tenant_db_id
+    )
+    item_query = select(TenantInvitation).where(TenantInvitation.tenant_id == tenant_db_id)
+    if status is not None:
+        total_query = total_query.where(TenantInvitation.status == status)
+        item_query = item_query.where(TenantInvitation.status == status)
+
+    total = (await db.execute(total_query)).scalar_one()
 
     items = (
         await db.execute(
-            select(TenantInvitation)
-            .where(TenantInvitation.tenant_id == tenant_db_id)
-            .offset(skip)
-            .limit(limit)
-        )
-    ).scalars().all()
-
-    items_resp = [TenantInvitationResponse.model_validate(i) for i in items]
-    return PaginatedResponse[TenantInvitationResponse].create(items=items_resp, total=total, skip=skip, limit=limit)
-
-
-@router.get("/invitations/me", response_model=PaginatedResponse[TenantInvitationResponse])
-async def list_my_invitations(
-    skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List invitations sent to the current authenticated user's email."""
-    await _expire_pending_invitations_for_email(db, current_user.email)
-
-    total = (
-        await db.execute(
-            select(func.count(col(TenantInvitation.id))).where(
-                TenantInvitation.email == current_user.email,
-            )
-        )
-    ).scalar_one()
-
-    items = (
-        await db.execute(
-            select(TenantInvitation)
-            .where(TenantInvitation.email == current_user.email)
+            item_query
             .order_by(TenantInvitation.created_at.desc())
             .offset(skip)
             .limit(limit)
@@ -610,6 +617,54 @@ async def list_my_invitations(
 
     items_resp = [TenantInvitationResponse.model_validate(i) for i in items]
     return PaginatedResponse[TenantInvitationResponse].create(items=items_resp, total=total, skip=skip, limit=limit)
+
+
+@router.get("/invitations/me", response_model=PaginatedResponse[MyTenantInvitationResponse])
+async def list_my_invitations(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    status: InvitationStatus | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List invitations sent to the current authenticated user's email."""
+    await _expire_pending_invitations_for_email(db, current_user.email)
+
+    total_query = select(func.count(col(TenantInvitation.id))).where(
+        TenantInvitation.email == current_user.email,
+    )
+    item_query = (
+        select(TenantInvitation, Tenant)
+        .join(Tenant, Tenant.id == TenantInvitation.tenant_id)
+        .where(TenantInvitation.email == current_user.email)
+    )
+    if status is not None:
+        total_query = total_query.where(TenantInvitation.status == status)
+        item_query = item_query.where(TenantInvitation.status == status)
+
+    total = (await db.execute(total_query)).scalar_one()
+
+    rows = (
+        await db.execute(
+            item_query
+            .order_by(TenantInvitation.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+    ).all()
+
+    items_resp = [
+        MyTenantInvitationResponse.model_validate(
+            _serialize_my_tenant_invitation_response(invitation, tenant)
+        )
+        for invitation, tenant in rows
+    ]
+    return PaginatedResponse[MyTenantInvitationResponse].create(
+        items=items_resp,
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.post("/invitations/accept", response_model=TenantMemberResponse)

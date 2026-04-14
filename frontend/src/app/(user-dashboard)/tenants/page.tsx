@@ -12,6 +12,9 @@ import {
   useRemoveMember,
   useTenantInvitations,
   useCreateInvitation,
+  useMyTenantInvitations,
+  useAcceptInvitation,
+  useDeclineInvitation,
   useDeleteInvitation,
 } from '@/hooks/use-tenants';
 import { useAuthStore } from '@/store/auth-store';
@@ -23,9 +26,104 @@ import {
   Building2, Plus, Check, Users, Mail, Pencil, Trash2,
   ChevronDown, ChevronRight, UserMinus, Send, X,
 } from 'lucide-react';
-import type { Tenant, TenantRole } from '@/types';
+import type { MyTenantInvitation, Tenant, TenantRole } from '@/types';
 
 const ROLES: TenantRole[] = ['owner', 'admin', 'member'];
+
+function formatInvitationExpiry(expiresAt: string) {
+  const expiry = new Date(expiresAt);
+  if (Number.isNaN(expiry.getTime())) {
+    return expiresAt;
+  }
+  return expiry.toLocaleDateString();
+}
+
+function PendingInvitationsSection() {
+  const { data, isLoading } = useMyTenantInvitations({ status: 'pending', limit: 20 });
+  const acceptInvitation = useAcceptInvitation();
+  const declineInvitation = useDeclineInvitation();
+  const [activeAction, setActiveAction] = useState<{
+    token: string;
+    action: 'accept' | 'decline';
+  } | null>(null);
+
+  const invitations = data?.items ?? [];
+
+  const handleDecision = async (invitation: MyTenantInvitation, action: 'accept' | 'decline') => {
+    setActiveAction({ token: invitation.token, action });
+    try {
+      if (action === 'accept') {
+        await acceptInvitation.mutateAsync(invitation.token);
+      } else {
+        await declineInvitation.mutateAsync(invitation.token);
+      }
+    } finally {
+      setActiveAction(null);
+    }
+  };
+
+  if (!isLoading && invitations.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card className="border-amber-200 bg-amber-50/50">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <Mail className="h-5 w-5 text-amber-600" />
+          Pending invitations
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading && <Skeleton className="h-20 w-full" />}
+        {!isLoading &&
+          invitations.map((invitation) => {
+            const accepting =
+              activeAction?.token === invitation.token && activeAction.action === 'accept';
+            const declining =
+              activeAction?.token === invitation.token && activeAction.action === 'decline';
+
+            return (
+              <div
+                key={invitation.id}
+                className="flex flex-col gap-3 rounded-lg border border-amber-100 bg-white p-4 md:flex-row md:items-center md:justify-between"
+              >
+                <div>
+                  <p className="font-medium text-gray-900">{invitation.tenant_name}</p>
+                  <p className="text-sm text-gray-500">
+                    {invitation.tenant_slug} · {invitation.role} access · expires{' '}
+                    {formatInvitationExpiry(invitation.expires_at)}
+                  </p>
+                  {invitation.tenant_description && (
+                    <p className="mt-1 text-sm text-gray-500">{invitation.tenant_description}</p>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => handleDecision(invitation, 'accept')}
+                    isLoading={accepting}
+                    disabled={declining}
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleDecision(invitation, 'decline')}
+                    isLoading={declining}
+                    disabled={accepting}
+                  >
+                    Decline
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+      </CardContent>
+    </Card>
+  );
+}
 
 function TenantMembersTab({ tenantId }: { tenantId: string }) {
   const { data, isLoading } = useTenantMembers(tenantId);
@@ -288,6 +386,8 @@ export default function TenantsPage() {
           <Plus className="h-4 w-4 mr-2" /> New Organization
         </Button>
       </div>
+
+      <PendingInvitationsSection />
 
       {showCreateForm && (
         <Card>

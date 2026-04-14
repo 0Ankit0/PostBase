@@ -44,8 +44,10 @@ export {
   useUpdateMemberRole,
   useRemoveMember,
   useTenantInvitations,
+  useMyTenantInvitations,
   useCreateInvitation,
   useAcceptInvitation,
+  useDeclineInvitation,
   useDeleteInvitation,
   useSwitchTenant,
 } from './use-tenants';

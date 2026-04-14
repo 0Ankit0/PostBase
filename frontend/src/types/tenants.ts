@@ -1,7 +1,7 @@
 // Multitenancy module types
 
 export type TenantRole = 'owner' | 'admin' | 'member';
-export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+export type InvitationStatus = 'pending' | 'accepted' | 'declined' | 'expired' | 'revoked';
 
 export interface Tenant {
   id: string;
@@ -37,6 +37,19 @@ export interface TenantInvitation {
   expires_at: string;
   created_at: string;
   accepted_at?: string;
+  token?: string;
+  tenant_name?: string;
+  tenant_slug?: string;
+  tenant_description?: string;
+  tenant_is_active?: boolean;
+}
+
+export interface MyTenantInvitation extends TenantInvitation {
+  token: string;
+  tenant_name: string;
+  tenant_slug: string;
+  tenant_description: string;
+  tenant_is_active: boolean;
 }
 
 export interface TenantCreate {

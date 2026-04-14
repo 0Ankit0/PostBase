@@ -43,5 +43,6 @@ class TenantAnalyticsEvents {
 
   static const String tenantCreated = 'tenant_created';
   static const String memberInvited = 'tenant_member_invited';
+  static const String invitationDeclined = 'tenant_invitation_declined';
   static const String memberJoined = 'tenant_member_joined';
 }
