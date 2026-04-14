@@ -9,7 +9,8 @@ from src.apps.iam.models.role import UserRole
 from src.apps.iam.models.token_tracking import TokenTracking
 from src.db.session import get_session
 from pydantic import ValidationError
-from jose import JWTError, jwt
+from jose import JWTError
+from jose.jwt import decode as jwt_decode
 from src.apps.core.config import settings
 from src.apps.core import security
 from src.apps.core.logging import set_log_context
@@ -44,7 +45,7 @@ async def get_current_user(
         )
     
     try:
-        payload = jwt.decode(
+        payload = jwt_decode(
             token,
             settings.SECRET_KEY,
             algorithms=[security.ALGORITHM]

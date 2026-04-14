@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.apps.core import security
 from src.apps.core.config import settings
+from src.apps.iam.utils.hashid import encode_id
 from src.apps.notification.models.notification import Notification, NotificationType
 from src.apps.notification.schemas.notification import NotificationCreate
 from src.apps.notification.services.notification import (
@@ -209,7 +210,7 @@ class TestNotificationAPI:
 
         token = await _login(client, "apiuser3")
         resp = await client.patch(
-            f"/api/v1/notifications/{n.id}/read/",
+            f"/api/v1/notifications/{encode_id(n.id)}/read/",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
@@ -240,7 +241,7 @@ class TestNotificationAPI:
 
         token = await _login(client, "apiuser5")
         resp = await client.delete(
-            f"/api/v1/notifications/{n.id}/",
+            f"/api/v1/notifications/{encode_id(n.id)}/",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 204

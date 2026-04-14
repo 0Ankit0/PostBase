@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.apps.core import security
 from src.apps.core.security import TokenType
 from src.apps.iam.models.token_tracking import TokenTracking
+from src.apps.iam.utils.hashid import encode_id
 from src.apps.websocket.crypto import (
     decrypt,
     derive_session_key,
@@ -283,12 +284,12 @@ class TestWSRestEndpoints:
     async def test_online_check(self, client: AsyncClient, db_session: AsyncSession):
         token, user = await self._get_token(client, db_session)
         resp = await client.get(
-            f"/api/v1/ws/online/{user.id}/",
+            f"/api/v1/ws/online/{encode_id(user.id)}/",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["user_id"] == user.id
+        assert data["user_id"] == encode_id(user.id)
         assert data["online"] is False  # not connected via WS in this test
 
 

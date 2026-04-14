@@ -58,9 +58,9 @@ def _esewa_callback_data(transaction_uuid: str, total_amount: int = 100) -> str:
     return base64.b64encode(json.dumps(fields_values).encode()).decode()
 
 
-@pytest.fixture(autouse=True)
-async def _override_finance_user(client: AsyncClient, db_session: AsyncSession):
-    """Keep unit payment tests focused on payment logic, not auth token plumbing."""
+@pytest.fixture
+async def finance_test_user(db_session: AsyncSession) -> User:
+    """Provide the authenticated user used by finance unit tests."""
     user = User(
         username="finance_unit_user",
         email="finance_unit_user@example.com",
@@ -70,9 +70,14 @@ async def _override_finance_user(client: AsyncClient, db_session: AsyncSession):
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
+    return user
 
+
+@pytest.fixture(autouse=True)
+async def _override_finance_user(finance_test_user: User):
+    """Keep unit payment tests focused on payment logic, not auth token plumbing."""
     async def _current_user_override():
-        return user
+        return finance_test_user
 
     app.dependency_overrides[get_current_user] = _current_user_override
     yield
@@ -212,8 +217,11 @@ class TestKhaltiPayment:
             },
         )
 
-        assert resp.status_code == 400
-        assert "at least 1000 paisa" in resp.json()["detail"]
+        assert resp.status_code == 422
+        assert any(
+            "khalti amount must be at least 1000" in error["msg"].lower()
+            for error in resp.json()["detail"]
+        )
 
     @pytest.mark.unit
     async def test_khalti_initiate_provider_error(self, client: AsyncClient):
@@ -243,7 +251,12 @@ class TestKhaltiPayment:
         assert resp.status_code == 400
 
     @pytest.mark.unit
-    async def test_khalti_verify_success(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_khalti_verify_success(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        finance_test_user: User,
+    ):
         """Verifying a Khalti payment should update the transaction to COMPLETED."""
         # Pre-create a transaction record as if initiation already happened
         tx = PaymentTransaction(
@@ -255,6 +268,7 @@ class TestKhaltiPayment:
             website_url="http://localhost:3000",
             status=PaymentStatus.INITIATED,
             provider_pidx="test_pidx_abc123",
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()
@@ -304,7 +318,12 @@ class TestKhaltiPayment:
         assert resp.status_code == 400
 
     @pytest.mark.unit
-    async def test_khalti_verify_cancelled(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_khalti_verify_cancelled(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        finance_test_user: User,
+    ):
         """Khalti 'User canceled' status should map to CANCELLED."""
         tx = PaymentTransaction(
             provider=PaymentProvider.KHALTI,
@@ -315,6 +334,7 @@ class TestKhaltiPayment:
             website_url="",
             status=PaymentStatus.INITIATED,
             provider_pidx="pidx_cancel",
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()
@@ -350,6 +370,7 @@ class TestKhaltiPayment:
         self,
         client: AsyncClient,
         db_session: AsyncSession,
+        finance_test_user: User,
     ):
         tx = PaymentTransaction(
             provider=PaymentProvider.KHALTI,
@@ -361,6 +382,7 @@ class TestKhaltiPayment:
             website_url="",
             status=PaymentStatus.COMPLETED,
             provider_pidx="pidx_dup",
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()
@@ -378,6 +400,7 @@ class TestKhaltiPayment:
         self,
         client: AsyncClient,
         db_session: AsyncSession,
+        finance_test_user: User,
     ):
         tx = PaymentTransaction(
             provider=PaymentProvider.KHALTI,
@@ -389,6 +412,7 @@ class TestKhaltiPayment:
             website_url="",
             status=PaymentStatus.INITIATED,
             provider_pidx="pidx_pending",
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()
@@ -466,7 +490,12 @@ class TestEsewaPayment:
         assert form_fields["signature"] == expected_sig
 
     @pytest.mark.unit
-    async def test_esewa_verify_success(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_esewa_verify_success(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        finance_test_user: User,
+    ):
         """Valid eSewa callback data should verify successfully."""
         transaction_uuid = "esewa-uuid-test-001"
 
@@ -480,6 +509,7 @@ class TestEsewaPayment:
             website_url="",
             status=PaymentStatus.INITIATED,
             provider_pidx=transaction_uuid,
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()
@@ -550,7 +580,12 @@ class TestEsewaPayment:
         assert resp.status_code == 400
 
     @pytest.mark.unit
-    async def test_esewa_verify_rejects_amount_tampering(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_esewa_verify_rejects_amount_tampering(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        finance_test_user: User,
+    ):
         tx = PaymentTransaction(
             provider=PaymentProvider.ESEWA,
             amount=250,
@@ -561,6 +596,7 @@ class TestEsewaPayment:
             website_url="",
             status=PaymentStatus.INITIATED,
             provider_pidx="esewa-mismatch-uuid",
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()
@@ -587,7 +623,12 @@ class TestTransactionCRUD:
         assert resp.status_code == 404
 
     @pytest.mark.unit
-    async def test_get_transaction_success(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_get_transaction_success(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        finance_test_user: User,
+    ):
         tx = PaymentTransaction(
             provider=PaymentProvider.KHALTI,
             amount=500,
@@ -596,6 +637,7 @@ class TestTransactionCRUD:
             return_url="http://localhost:3000/cb",
             website_url="",
             status=PaymentStatus.COMPLETED,
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()
@@ -608,7 +650,12 @@ class TestTransactionCRUD:
         assert data["status"] == "completed"
 
     @pytest.mark.unit
-    async def test_list_transactions(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_list_transactions(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        finance_test_user: User,
+    ):
         for i in range(3):
             db_session.add(PaymentTransaction(
                 provider=PaymentProvider.ESEWA,
@@ -618,6 +665,7 @@ class TestTransactionCRUD:
                 return_url="http://localhost/cb",
                 website_url="",
                 status=PaymentStatus.PENDING,
+                user_id=finance_test_user.id,
             ))
         await db_session.commit()
 
@@ -674,7 +722,12 @@ class TestTransactionCRUD:
         assert resp.status_code == 422
 
     @pytest.mark.unit
-    async def test_verify_rejects_currency_mismatch(self, client: AsyncClient, db_session: AsyncSession):
+    async def test_verify_rejects_currency_mismatch(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        finance_test_user: User,
+    ):
         tx = PaymentTransaction(
             provider=PaymentProvider.KHALTI,
             amount=1000,
@@ -685,6 +738,7 @@ class TestTransactionCRUD:
             website_url="http://localhost",
             status=PaymentStatus.INITIATED,
             provider_pidx="pidx_mismatch",
+            user_id=finance_test_user.id,
         )
         db_session.add(tx)
         await db_session.commit()

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException
 
+from src.apps.core.config import settings
 from src.apps.iam.models.user import User
 from src.postbase.control_plane.service import set_binding_status
 from src.postbase.domain.enums import BindingStatus, CapabilityKey, SecretStatus
@@ -21,7 +22,7 @@ from src.postbase.platform.secret_store import DbEncryptedSecretStore
 
 @pytest.mark.asyncio
 async def test_resolver_uses_latest_valid_secret_version_with_fallback(db_session) -> None:
-    store = DbEncryptedSecretStore("unit-test-key")
+    store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
     project = Project(tenant_id=1, name="proj", slug="proj")
     db_session.add(project)
     await db_session.flush()
