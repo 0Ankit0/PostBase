@@ -770,6 +770,11 @@ class _PlatformProjectCard extends StatelessWidget {
               'environments: ${overview.environmentCount} · active bindings: ${overview.activeBindings} · degraded: ${overview.degradedBindings}',
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
+            const SizedBox(height: 6),
+            Text(
+              'active envs: ${overview.activeEnvironmentCount} · secrets: ${overview.secretCount} · audit events: ${overview.recentAuditEvents}',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
             if (firstEnvironment != null) ...[
               const SizedBox(height: 10),
               _SettingsRow(
@@ -791,6 +796,51 @@ class _PlatformProjectCard extends StatelessWidget {
               const SizedBox(height: 6),
               Text(
                 'switchovers: ${firstEnvironment.recentSwitchovers} · pending migrations: ${firstEnvironment.pendingMigrations} · usage: ${firstEnvironment.usagePointsTotal.toStringAsFixed(2)}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'drifted migrations: ${firstEnvironment.driftedMigrations} · secrets: ${firstEnvironment.secretCount} · keys: ${firstEnvironment.keyCount}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _StatusBadge(
+                    label: 'Quota ${firstEnvironment.quotaState}',
+                    color: _quotaStateColor(firstEnvironment.quotaState),
+                  ),
+                  _StatusBadge(
+                    label:
+                        'Utilization ${(firstEnvironment.quotaUtilization * 100).toStringAsFixed(0)}%',
+                    color: Colors.blueGrey,
+                  ),
+                  _StatusBadge(
+                    label: 'Mode ${firstEnvironment.degradationMode}',
+                    color: _degradationModeColor(firstEnvironment.degradationMode),
+                  ),
+                  if (firstEnvironment.quotaWarningTriggered)
+                    const _StatusBadge(
+                      label: 'Warning threshold',
+                      color: Colors.amber,
+                    ),
+                  if (firstEnvironment.quotaSoftLimited)
+                    const _StatusBadge(
+                      label: 'Soft limit active',
+                      color: Colors.orange,
+                    ),
+                  if (firstEnvironment.quotaHardLimited)
+                    const _StatusBadge(
+                      label: 'Hard limit active',
+                      color: Colors.red,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Recent audit events for this environment: ${firstEnvironment.recentAuditEvents}',
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
             ],
@@ -846,6 +896,30 @@ class _SectionHeader extends StatelessWidget {
             ),
       ),
     );
+  }
+}
+
+Color _quotaStateColor(String state) {
+  switch (state) {
+    case 'warning':
+      return Colors.amber;
+    case 'soft_limited':
+      return Colors.orange;
+    case 'hard_limited':
+      return Colors.red;
+    default:
+      return Colors.green;
+  }
+}
+
+Color _degradationModeColor(String mode) {
+  switch (mode) {
+    case 'controlled':
+      return Colors.orange;
+    case 'blocked':
+      return Colors.red;
+    default:
+      return Colors.blueGrey;
   }
 }
 

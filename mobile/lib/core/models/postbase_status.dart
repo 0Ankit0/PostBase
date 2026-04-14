@@ -34,7 +34,17 @@ class PostBaseEnvironmentOverview {
   final int degradedBindings;
   final int recentSwitchovers;
   final int pendingMigrations;
+  final int driftedMigrations;
+  final int secretCount;
+  final int keyCount;
   final double usagePointsTotal;
+  final int recentAuditEvents;
+  final String quotaState;
+  final bool quotaWarningTriggered;
+  final bool quotaSoftLimited;
+  final bool quotaHardLimited;
+  final double quotaUtilization;
+  final String degradationMode;
 
   const PostBaseEnvironmentOverview({
     required this.environmentId,
@@ -46,7 +56,17 @@ class PostBaseEnvironmentOverview {
     required this.degradedBindings,
     required this.recentSwitchovers,
     required this.pendingMigrations,
+    required this.driftedMigrations,
+    required this.secretCount,
+    required this.keyCount,
     required this.usagePointsTotal,
+    required this.recentAuditEvents,
+    required this.quotaState,
+    required this.quotaWarningTriggered,
+    required this.quotaSoftLimited,
+    required this.quotaHardLimited,
+    required this.quotaUtilization,
+    required this.degradationMode,
   });
 
   factory PostBaseEnvironmentOverview.fromJson(Map<String, dynamic> json) {
@@ -60,7 +80,17 @@ class PostBaseEnvironmentOverview {
       degradedBindings: json['degraded_bindings'] as int? ?? 0,
       recentSwitchovers: json['recent_switchovers'] as int? ?? 0,
       pendingMigrations: json['pending_migrations'] as int? ?? 0,
+      driftedMigrations: json['drifted_migrations'] as int? ?? 0,
+      secretCount: json['secret_count'] as int? ?? 0,
+      keyCount: json['key_count'] as int? ?? 0,
       usagePointsTotal: (json['usage_points_total'] as num?)?.toDouble() ?? 0,
+      recentAuditEvents: json['recent_audit_events'] as int? ?? 0,
+      quotaState: json['quota_state'] as String? ?? 'healthy',
+      quotaWarningTriggered: json['quota_warning_triggered'] as bool? ?? false,
+      quotaSoftLimited: json['quota_soft_limited'] as bool? ?? false,
+      quotaHardLimited: json['quota_hard_limited'] as bool? ?? false,
+      quotaUtilization: (json['quota_utilization'] as num?)?.toDouble() ?? 0,
+      degradationMode: json['degradation_mode'] as String? ?? 'none',
     );
   }
 }
@@ -68,17 +98,23 @@ class PostBaseEnvironmentOverview {
 class PostBaseProjectOverview {
   final String projectId;
   final int environmentCount;
+  final int activeEnvironmentCount;
   final int activeBindings;
   final int degradedBindings;
+  final int secretCount;
   final double usagePointsTotal;
+  final int recentAuditEvents;
   final List<PostBaseEnvironmentOverview> environments;
 
   const PostBaseProjectOverview({
     required this.projectId,
     required this.environmentCount,
+    required this.activeEnvironmentCount,
     required this.activeBindings,
     required this.degradedBindings,
+    required this.secretCount,
     required this.usagePointsTotal,
+    required this.recentAuditEvents,
     required this.environments,
   });
 
@@ -91,9 +127,12 @@ class PostBaseProjectOverview {
     return PostBaseProjectOverview(
       projectId: json['project_id'] as String? ?? '',
       environmentCount: json['environment_count'] as int? ?? 0,
+      activeEnvironmentCount: json['active_environment_count'] as int? ?? 0,
       activeBindings: json['active_bindings'] as int? ?? 0,
       degradedBindings: json['degraded_bindings'] as int? ?? 0,
+      secretCount: json['secret_count'] as int? ?? 0,
       usagePointsTotal: (json['usage_points_total'] as num?)?.toDouble() ?? 0,
+      recentAuditEvents: json['recent_audit_events'] as int? ?? 0,
       environments: environments,
     );
   }
