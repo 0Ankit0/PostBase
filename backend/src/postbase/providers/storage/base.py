@@ -210,7 +210,6 @@ class StorageProviderBase:
         return StorageLifecycleResponse(file_id=row.id, lifecycle_state=detail, detail=f"provider={self.provider_key}")
 
     async def policy(self, context) -> StoragePolicyRead:
-        db: AsyncSession = context.db  # type: ignore[attr-defined]
         rules = await self.list_retention_rules(context)
         return StoragePolicyRead(
             max_signed_url_ttl_seconds=int(self.profile().limits.get("max_signed_url_ttl_seconds", 3600)),

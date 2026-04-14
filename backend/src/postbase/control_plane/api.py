@@ -89,7 +89,6 @@ from src.postbase.control_plane.service import (
 )
 from src.postbase.capabilities.events.webhook_jobs import replay_dead_letter_webhook_jobs
 from src.postbase.domain.models import (
-    AuditLog,
     BindingSecretRef,
     CertificationRun,
     CapabilityBinding,

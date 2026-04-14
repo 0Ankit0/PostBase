@@ -1222,6 +1222,21 @@ async def create_switchover_plan(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"retirement_strategy must be one of {sorted(ALLOWED_RETIREMENT_STRATEGIES)}",
         )
+    if canary_traffic_percent < 0 or canary_traffic_percent > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="canary_traffic_percent must be between 0 and 100",
+        )
+    if canary_health_checkpoint_count < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="canary_health_checkpoint_count must be >= 1",
+        )
+    if auto_abort_error_rate < 0 or auto_abort_error_rate > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="auto_abort_error_rate must be between 0 and 1",
+        )
     target_provider = (
         await db.execute(
             select(ProviderCatalogEntry).where(
@@ -1933,6 +1948,10 @@ async def set_binding_status(
         target_status=status_value,
     )
     if status_value == BindingStatus.ACTIVE:
+        provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
+        if provider is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+        await _validate_binding_activation_prerequisites(db, binding=binding, provider=provider)
         active_conflict = (
             await db.execute(
                 select(CapabilityBinding).where(
@@ -1951,10 +1970,6 @@ async def set_binding_status(
                     conflicting_binding_id=active_conflict.id,
                 ),
             )
-        provider = await db.get(ProviderCatalogEntry, binding.provider_catalog_entry_id)
-        if provider is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
-        await _validate_binding_activation_prerequisites(db, binding=binding, provider=provider)
 
     binding.status = status_value
     binding.last_transition_actor_user_id = actor.id
@@ -2339,9 +2354,3 @@ async def _build_switchover_preflight_report(
 
 def _preflight_is_ready(preflight_report: dict[str, Any]) -> bool:
     return all(item.get("ok") for item in preflight_report.values() if isinstance(item, dict))
-    if canary_traffic_percent < 0 or canary_traffic_percent > 100:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="canary_traffic_percent must be between 0 and 100")
-    if canary_health_checkpoint_count < 1:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="canary_health_checkpoint_count must be >= 1")
-    if auto_abort_error_rate < 0 or auto_abort_error_rate > 1:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="auto_abort_error_rate must be between 0 and 1")

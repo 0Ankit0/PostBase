@@ -178,7 +178,7 @@ async def test_superuser_can_verify_foreign_transaction(
     client: AsyncClient,
     db_session: AsyncSession,
 ):
-    owner_token = await _signup_and_get_token(client, "finance_owner_3", "finance_owner_3@example.com")
+    await _signup_and_get_token(client, "finance_owner_3", "finance_owner_3@example.com")
     admin_token = await _signup_and_get_token(client, "finance_admin", "finance_admin@example.com")
     admin = (
         await db_session.execute(select(User).where(User.username == "finance_admin"))

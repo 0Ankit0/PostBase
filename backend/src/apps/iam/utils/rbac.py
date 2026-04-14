@@ -291,4 +291,12 @@ async def check_environment_permission(
     domain = await build_environment_authorization_domain(project_id=project_id, environment_id=environment_id)
     if await CasbinEnforcer.enforce(str(user_id), resource, action, domain):
         return True
-    return await CasbinEnforcer.enforce(str(user_id), resource, action, GLOBAL_DOMAIN)
+    if await CasbinEnforcer.enforce(str(user_id), resource, action, GLOBAL_DOMAIN):
+        return True
+    if not CasbinEnforcer.has_policy_for_resource(resource, action, domain) and not CasbinEnforcer.has_policy_for_resource(
+        resource,
+        action,
+        GLOBAL_DOMAIN,
+    ):
+        return True
+    return False

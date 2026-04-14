@@ -51,6 +51,21 @@ class CasbinEnforcer:
             raise RuntimeError("Enforcer not initialized. Call get_enforcer first.")
         return cls._enforcer
 
+    @classmethod
+    def reset(cls) -> None:
+        cls._enforcer = None
+
+    @classmethod
+    def has_policy_for_resource(
+        cls,
+        obj: str,
+        act: str,
+        domain: str = GLOBAL_DOMAIN,
+    ) -> bool:
+        enforcer = cls._require_enforcer()
+        policies = enforcer.get_filtered_policy(1, cls.normalize_domain(domain), obj, act)
+        return bool(policies)
+
     # ── Policy management ─────────────────────────────────────────────────
 
     @classmethod

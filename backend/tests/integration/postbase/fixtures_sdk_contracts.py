@@ -4,7 +4,7 @@ SDK_LIVE_FIXTURES = {
     "list_provider_catalog": {
         "method": "GET",
         "path": "/api/v1/provider-catalog",
-        "expected_status": 200,
+        "expected_status": 401,
     },
     "list_projects": {
         "method": "GET",

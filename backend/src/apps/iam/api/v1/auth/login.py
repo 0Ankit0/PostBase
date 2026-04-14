@@ -1,6 +1,7 @@
 from datetime import timedelta, datetime, timezone
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlalchemy import or_
 from sqlmodel import col, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import jwt
@@ -28,6 +29,7 @@ from src.apps.observability.service import (
     record_successful_login_event,
     record_token_event,
 )
+from src.postbase.platform.audit import record_auth_timeline_event
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
@@ -52,7 +54,12 @@ async def login_access_token(
     
     try:
         result = await db.execute(
-            select(User).where(User.username == login_data.username)
+            select(User).where(
+                or_(
+                    col(User.username) == login_data.username,
+                    col(User.email) == login_data.username,
+                )
+            )
         )
         user = result.scalars().first()
 
@@ -234,6 +241,14 @@ async def login_access_token(
             action="issued",
             request=request,
             metadata={"issued_tokens": 2, "auth_method": "password"},
+        )
+        await record_auth_timeline_event(
+            db,
+            event_name="auth.login_success",
+            subject="iam_user",
+            subject_id=str(user.id),
+            actor_user_id=user.id,
+            payload={"method": "password", "ip_address": ip_address},
         )
         await db.commit()
 

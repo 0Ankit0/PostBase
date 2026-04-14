@@ -1,18 +1,21 @@
-import pytest
 import os
+os.environ["TESTING"] = "True"
+
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 
-from src.main import app
+from src.apps.iam.casbin_enforcer import CasbinEnforcer
 from src.db import session as db_session_module
 from src.db.session import get_session
-
-# Set TESTING environment variable before importing settings
-os.environ["TESTING"] = "True"
+from src.main import app
+from src.postbase import bootstrap_postbase_runtime
+from src.postbase.platform.seeding import seed_provider_catalog
 
 
 @pytest.fixture(scope="function")
@@ -51,7 +54,7 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture(scope="function")
-async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+async def client(db_session: AsyncSession, test_engine) -> AsyncGenerator[AsyncClient, None]:
     """Create a test client with database session override and disabled rate limiting."""
     from src.apps.iam.api.deps import get_db
     from src.apps.analytics.service import AnalyticsService
@@ -73,6 +76,10 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         expire_on_commit=False,
     )
     db_session_module.async_session_factory = test_async_session
+    bootstrap_postbase_runtime()
+    CasbinEnforcer.reset()
+    app.state.casbin_enforcer = await CasbinEnforcer.get_enforcer(test_engine)
+    await seed_provider_catalog(db_session)
     
     # Disable rate limiting for tests - handle both main limiter and route limiters
     if hasattr(app.state, 'limiter'):
@@ -110,5 +117,6 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     for limiter, was_enabled in limiters_to_restore:
         limiter.enabled = was_enabled
     
+    CasbinEnforcer.reset()
     db_session_module.async_session_factory = original_async_session_factory
     app.dependency_overrides.clear()

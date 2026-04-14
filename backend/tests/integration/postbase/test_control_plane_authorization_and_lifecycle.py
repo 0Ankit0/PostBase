@@ -85,7 +85,7 @@ async def test_binding_status_transitions_enforce_legal_matrix(client, db_sessio
     owner_headers, _, _, environment_id = await _setup_project_environment(client, db_session)
     list_response = await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)
     assert list_response.status_code == 200, list_response.text
-    binding_id = list_response.json()[0]["id"]
+    binding_id = list_response.json()["items"][0]["id"]
 
     valid_transition = await client.post(
         f"/api/v1/bindings/{binding_id}/status",
@@ -129,7 +129,7 @@ async def test_binding_activation_blocked_when_required_secret_missing(client, d
         json={"status": "active", "reason": "force-activate"},
     )
     assert activate_response.status_code == 409, activate_response.text
-    assert "missing or expired secrets" in activate_response.json()["detail"]
+    assert "missing or expired secrets" in activate_response.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -197,7 +197,7 @@ async def test_binding_status_idempotency_replays_duplicate_submit(client, db_se
     owner_headers, _, _, environment_id = await _setup_project_environment(client, db_session)
     list_response = await client.get(f"/api/v1/environments/{environment_id}/bindings", headers=owner_headers)
     assert list_response.status_code == 200, list_response.text
-    binding_id = list_response.json()[0]["id"]
+    binding_id = list_response.json()["items"][0]["id"]
     idem_headers = {**owner_headers, "Idempotency-Key": f"binding-status-{uuid4().hex[:8]}"}
     payload = {"status": "deprecated", "reason": "planned transition"}
 
