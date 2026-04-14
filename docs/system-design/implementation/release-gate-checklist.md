@@ -35,7 +35,7 @@ Use the following labels when a required gate fails:
 
 ## Branch Protection Requirement
 
-`main`, `develop`, and `release/**` branch protection must require all implementation gates to be green before merge: `docs`, `deploy-readiness`, `backend-lint`, `backend-tests`, `backend-integration`, `frontend-lint`, `frontend-typecheck`, `frontend-tests`, `mobile-lint`, and `mobile-tests`.
+`master`, `main`, `develop`, and `release/**` branch protection must require all implementation gates to be green before merge: `docs`, `deploy-readiness`, `backend-lint`, `backend-tests`, `backend-integration`, `frontend-lint`, `frontend-typecheck`, `frontend-tests`, `mobile-lint`, and `mobile-tests`.
 
 ## Release Tagging Rule
 

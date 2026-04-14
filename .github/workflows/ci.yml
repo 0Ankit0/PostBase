@@ -2,9 +2,9 @@ name: Template CI
 
 on:
   push:
-    branches: [main, develop, 'release/**']
+    branches: [master, main, develop, 'release/**']
   pull_request:
-    branches: [main, develop, 'release/**']
+    branches: [master, main, develop, 'release/**']
 
 jobs:
   docs:
@@ -61,7 +61,7 @@ jobs:
       - name: Run backend unit and API tests
         run: uv run pytest tests/unit tests/integration/api
 
-  postbase-contract-tests:
+  backend-integration:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -75,8 +75,8 @@ jobs:
         run: pip install uv
       - name: Sync dependencies
         run: uv sync --all-groups
-      - name: Run PostBase integration contracts
-        run: uv run pytest tests/integration/postbase/test_sdk_compat_contracts.py tests/integration/postbase/test_provider_conformance_harness.py
+      - name: Run backend integration suite
+        run: uv run pytest tests/integration/postbase tests/integration/auth
 
   sdk-artifacts:
     runs-on: ubuntu-latest
@@ -190,6 +190,8 @@ jobs:
         run: npm ci
       - name: Test
         run: npm run test
+      - name: Build
+        run: npm run build
 
   mobile-lint:
     runs-on: ubuntu-latest
@@ -226,9 +228,11 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - docs
+      - deploy-readiness
       - backend-lint
       - backend-tests
-      - postbase-contract-tests
+      - backend-integration
       - sdk-artifacts
       - provider-conformance
       - schema-breaking-gate
