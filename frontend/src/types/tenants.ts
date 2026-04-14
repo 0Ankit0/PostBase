@@ -37,6 +37,7 @@ export interface TenantInvitation {
   expires_at: string;
   created_at: string;
   accepted_at?: string;
+  decided_at?: string;
   token?: string;
   tenant_name?: string;
   tenant_slug?: string;

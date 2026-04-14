@@ -90,6 +90,7 @@ class TenantInvitationResponse(BaseModel):
     expires_at: datetime
     created_at: datetime
     accepted_at: Optional[datetime]
+    decided_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
 

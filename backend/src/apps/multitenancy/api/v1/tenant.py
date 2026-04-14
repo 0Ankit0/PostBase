@@ -92,6 +92,7 @@ def _serialize_tenant_invitation_response(
         "expires_at": response.expires_at,
         "created_at": response.created_at,
         "accepted_at": response.accepted_at,
+        "decided_at": response.decided_at,
     }
 
 
@@ -165,6 +166,7 @@ async def _expire_pending_invitations_for_email(db: AsyncSession, email: str) ->
 
     for invitation in pending:
         invitation.status = InvitationStatus.EXPIRED
+        invitation.decided_at = now
     await db.commit()
     return True
 
@@ -691,7 +693,9 @@ async def accept_invitation(
         )
 
     if invitation.expires_at < datetime.now():
+        now = datetime.now()
         invitation.status = InvitationStatus.EXPIRED
+        invitation.decided_at = now
         await db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invitation has expired")
 
@@ -722,8 +726,10 @@ async def accept_invitation(
     )
     db.add(membership)
 
+    decision_time = datetime.now()
     invitation.status = InvitationStatus.ACCEPTED
-    invitation.accepted_at = datetime.now()
+    invitation.accepted_at = decision_time
+    invitation.decided_at = decision_time
     await db.flush()
     try:
         await CasbinEnforcer.add_role_for_user(str(current_user.id), invitation.role, tenant.slug)
@@ -781,11 +787,14 @@ async def decline_invitation(
         )
 
     if invitation.expires_at < datetime.now():
+        now = datetime.now()
         invitation.status = InvitationStatus.EXPIRED
+        invitation.decided_at = now
         await db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invitation has expired")
 
     invitation.status = InvitationStatus.DECLINED
+    invitation.decided_at = datetime.now()
     await db.commit()
     await db.refresh(invitation)
 
@@ -827,4 +836,5 @@ async def revoke_invitation(
         )
 
     invitation.status = InvitationStatus.REVOKED
+    invitation.decided_at = datetime.now()
     await db.commit()

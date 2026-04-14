@@ -111,6 +111,7 @@ class TenantInvitation(TenantInvitationBase, table=True):
     expires_at: datetime = Field(description="When the invitation expires")
     created_at: datetime = Field(default_factory=datetime.now)
     accepted_at: Optional[datetime] = Field(default=None)
+    decided_at: Optional[datetime] = Field(default=None)
 
     # Relationships
     tenant: Optional[Tenant] = Relationship(back_populates="invitations")

@@ -38,6 +38,17 @@ function formatInvitationExpiry(expiresAt: string) {
   return expiry.toLocaleDateString();
 }
 
+function formatInvitationDecision(decidedAt?: string) {
+  if (!decidedAt) {
+    return null;
+  }
+  const decisionTime = new Date(decidedAt);
+  if (Number.isNaN(decisionTime.getTime())) {
+    return decidedAt;
+  }
+  return decisionTime.toLocaleString();
+}
+
 function PendingInvitationsSection() {
   const { data, isLoading } = useMyTenantInvitations({ status: 'pending', limit: 20 });
   const acceptInvitation = useAcceptInvitation();
@@ -213,6 +224,11 @@ function TenantInvitationsTab({ tenantId }: { tenantId: string }) {
           <div>
             <p className="text-sm font-medium text-gray-900">{inv.email}</p>
             <p className="text-xs text-gray-400 capitalize">{inv.role} · {inv.status}</p>
+            {inv.decided_at && inv.status !== 'pending' && (
+              <p className="text-xs text-gray-400">
+                Resolved {formatInvitationDecision(inv.decided_at)}
+              </p>
+            )}
           </div>
           <button
             onClick={() => deleteInvite.mutate({ tenantId, invitationId: inv.id })}
