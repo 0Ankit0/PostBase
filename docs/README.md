@@ -4,7 +4,9 @@ This `docs/` directory is the source of truth for PostBase documentation. The ca
 
 ## Documentation Map
 
+- `local-development.md` — local bootstrap, validation, and single-test command reference.
 - `system-design/README.md` — entry point for product scope, architecture, and execution guidance.
+- `user-manual.md` — end-to-end local usage walkthrough with control-plane and capability API examples.
 - `system-design/requirements/` — capability requirements and user stories.
 - `system-design/analysis/` — use cases, business rules, and domain analysis artifacts.
 - `system-design/high-level-design/` — architecture, context, and sequence-level diagrams.

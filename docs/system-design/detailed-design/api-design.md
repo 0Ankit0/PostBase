@@ -43,7 +43,22 @@
 | Auth | GET | `/api/v1/auth/me` | Retrieve current auth user |
 | Data | POST | `/api/v1/data/query` | Facade query endpoint |
 | Data | GET | `/api/v1/data/{namespace}/{table}` | List rows |
-| Storage | POST | `/api/v1/storage/files` | Create upload intent / file record |
+| Storage | POST | `/api/v1/storage/uploads/init` | Create a provider-backed upload URL for direct upload flows |
+| Storage | POST | `/api/v1/storage/files` | Upload file contents through the facade and create the file record |
+| Storage | GET | `/api/v1/storage/files` | List files for the current environment scope |
+| Storage | GET | `/api/v1/storage/files/{fileId}/metadata` | Read file metadata |
+| Storage | PATCH | `/api/v1/storage/files/{fileId}/metadata` | Update file metadata |
+| Storage | GET | `/api/v1/storage/files/{fileId}/lifecycle` | Inspect lifecycle and retention state for a file |
+| Storage | GET | `/api/v1/storage/files/{fileId}/signed-url` | Issue a default signed access URL |
+| Storage | POST | `/api/v1/storage/files/{fileId}/signed-urls` | Issue a signed URL grant with explicit lifecycle metadata |
+| Storage | POST | `/api/v1/storage/signed-urls/{grantId}/refresh` | Refresh an existing signed URL grant before expiry |
+| Storage | DELETE | `/api/v1/storage/signed-urls/{grantId}` | Revoke a signed URL grant |
+| Storage | GET | `/api/v1/storage/policy` | Read storage policy, signed URL TTL limits, and retention configuration |
+| Storage | GET | `/api/v1/storage/retention/rules` | List retention rules for the current environment scope |
+| Storage | POST | `/api/v1/storage/retention/rules` | Create or update a retention rule |
+| Storage | POST | `/api/v1/storage/retention/run` | Execute retention cleanup immediately |
+| Storage | DELETE | `/api/v1/storage/files/{fileId}` | Delete a file and associated lifecycle state |
+| Storage | GET | `/api/v1/storage/status` | Resolve storage facade/provider readiness |
 | Functions | POST | `/api/v1/functions` | Register function or job |
 | Functions | POST | `/api/v1/functions/{functionId}/invoke` | Invoke function |
 | Events | POST | `/api/v1/events/channels` | Create event channel |
