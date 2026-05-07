@@ -10,10 +10,6 @@ wheels/
 .venv
 .env
 
-# sqlite database files
-*.db
-*.sqlite
-
 # Logs and temporary files along with test artifacts
 logs/
 *.log
