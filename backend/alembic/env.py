@@ -44,8 +44,10 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def run_migrations_online() -> None:
+    if not settings.SYNC_DATABASE_URL:
+        raise ValueError("SYNC_DATABASE_URL must be configured for Alembic migrations")
     connectable = create_engine(
-        settings.SYNC_DATABASE_URL or "sqlite:///./test.db",
+        settings.SYNC_DATABASE_URL,
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:

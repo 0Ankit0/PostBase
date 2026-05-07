@@ -168,7 +168,7 @@ class LocalPostgresAuthProvider:
                     )
                 )
             ).scalars().first()
-            if session is None or session.refresh_expires_at < datetime.now(timezone.utc):
+            if session is None or session.refresh_expires_at < datetime.utcnow():
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Expired refresh token")
             auth_user = await db.get(AuthUser, session.auth_user_id)
             if auth_user is None:

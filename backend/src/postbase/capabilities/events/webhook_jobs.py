@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +58,7 @@ async def enqueue_webhook_job(
         target_ref=target_ref,
         status="pending",
         max_attempts=bounded_attempts,
-        next_attempt_at=datetime.now(timezone.utc),
+        next_attempt_at=datetime.utcnow(),
         signing_secrets_json=list(signing_secrets or []),
     )
     db.add(job)
@@ -73,7 +73,7 @@ async def process_due_webhook_jobs(
     limit: int = 50,
     job_ids: list[int] | None = None,
 ) -> list[DeliveryRecord]:
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     filters = [
         WebhookDeliveryJob.status.in_(ACTIVE_JOB_STATUSES),
         WebhookDeliveryJob.next_attempt_at <= now,
@@ -268,7 +268,7 @@ async def replay_dead_letter_webhook_jobs(
             .limit(limit)
         )
     ).scalars().all()
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     requeued_dead_letters: list[int] = []
     skipped_dead_letters: list[int] = []
     reasons: dict[str, int] = {

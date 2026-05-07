@@ -1845,7 +1845,7 @@ async def _list_bindings_using_secret_family(
 
 
 async def _resolve_latest_valid_secret_for_anchor(db: AsyncSession, *, anchor_secret: SecretRef) -> SecretRef | None:
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     return (
         await db.execute(
             select(SecretRef)
@@ -2155,7 +2155,7 @@ async def build_project_overview(
         migrations = (
             await db.execute(select(SchemaMigration).where(SchemaMigration.environment_id.in_(environment_ids)))
         ).scalars().all()
-        last_day = datetime.now(timezone.utc).replace(microsecond=0)
+        last_day = datetime.utcnow().replace(microsecond=0)
         audit_logs = (
             await db.execute(
                 select(AuditLog).where(

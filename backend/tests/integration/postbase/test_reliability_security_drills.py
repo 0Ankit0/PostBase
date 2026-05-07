@@ -1,18 +1,33 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 from sqlmodel import select
 
 from src.apps.core.config import settings
+from src.apps.multitenancy.models.tenant import Tenant
 from src.postbase.capabilities.events.webhook_jobs import enqueue_webhook_job, process_due_webhook_jobs
-from src.postbase.domain.models import EventChannel, Subscription, UsageMeter, WebhookDeliveryJob
+from src.postbase.domain.models import Environment, EventChannel, Project, Subscription, UsageMeter, WebhookDeliveryJob
+
+
+async def _seed_environment(db_session, *, suffix: str) -> Environment:
+    tenant = Tenant(name=f"events-{suffix}", slug=f"events-{suffix}", description="")
+    db_session.add(tenant)
+    await db_session.flush()
+    project = Project(tenant_id=tenant.id, name=f"Events {suffix}", slug=f"events-{suffix}")
+    db_session.add(project)
+    await db_session.flush()
+    environment = Environment(project_id=project.id, name="Development", slug=f"dev-{suffix}")
+    db_session.add(environment)
+    await db_session.flush()
+    return environment
 
 
 @pytest.mark.asyncio
 async def test_webhook_retry_ceiling_enforced(db_session):
-    channel = EventChannel(environment_id=1, channel_key="ceiling", description="")
+    environment = await _seed_environment(db_session, suffix="ceiling")
+    channel = EventChannel(environment_id=environment.id, channel_key="ceiling", description="")
     db_session.add(channel)
     await db_session.flush()
     subscription = Subscription(
@@ -40,7 +55,8 @@ async def test_webhook_retry_ceiling_enforced(db_session):
 async def test_webhook_circuit_breaker_halts_batch_processing(db_session, monkeypatch):
     monkeypatch.setattr(settings, "POSTBASE_WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 1)
 
-    channel = EventChannel(environment_id=1, channel_key="breaker", description="")
+    environment = await _seed_environment(db_session, suffix="breaker")
+    channel = EventChannel(environment_id=environment.id, channel_key="breaker", description="")
     db_session.add(channel)
     await db_session.flush()
 
@@ -77,7 +93,8 @@ async def test_webhook_circuit_breaker_halts_batch_processing(db_session, monkey
 async def test_webhook_auth_anomaly_and_backlog_alert_metrics_recorded(db_session, monkeypatch):
     monkeypatch.setattr(settings, "POSTBASE_WEBHOOK_BACKLOG_ALERT_THRESHOLD", 1)
 
-    channel = EventChannel(environment_id=1, channel_key="alerts", description="")
+    environment = await _seed_environment(db_session, suffix="alerts")
+    channel = EventChannel(environment_id=environment.id, channel_key="alerts", description="")
     db_session.add(channel)
     await db_session.flush()
 
@@ -115,14 +132,14 @@ async def test_webhook_auth_anomaly_and_backlog_alert_metrics_recorded(db_sessio
         target_ref=pending_subscription.target_ref,
         max_attempts=2,
     )
-    pending_job.next_attempt_at = datetime.now(timezone.utc)
+    pending_job.next_attempt_at = datetime.utcnow()
 
     await process_due_webhook_jobs(db_session, channel_id=channel.id, limit=1)
 
     usage_rows = (
         await db_session.execute(
             select(UsageMeter).where(
-                UsageMeter.environment_id == 1,
+                UsageMeter.environment_id == environment.id,
                 UsageMeter.capability_key == "events",
             )
         )

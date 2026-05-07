@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -74,7 +74,7 @@ async def test_delayed_duplicate_past_replay_window_creates_new_execution(db_ses
 
     first_row = await db_session.get(ExecutionRecord, first.id)
     assert first_row is not None
-    first_row.started_at = datetime.now(timezone.utc) - timedelta(seconds=replay_window_seconds + 1)
+    first_row.started_at = datetime.utcnow() - timedelta(seconds=replay_window_seconds + 1)
     await db_session.commit()
 
     duplicate = await provider.invoke(context, function.id, request, idempotency_key="dup-2")

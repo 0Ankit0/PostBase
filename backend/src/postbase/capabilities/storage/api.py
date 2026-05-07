@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 
@@ -119,7 +119,7 @@ async def run_retention(
     context=Depends(get_access_context),
     provider=Depends(get_storage_provider),
 ) -> RetentionExecutionResponse:
-    return await provider.run_retention(context, now=datetime.now(timezone.utc))
+    return await provider.run_retention(context, now=datetime.utcnow())
 
 
 @router.delete("/files/{file_id}", status_code=204, responses=CAPABILITY_ERROR_RESPONSES)

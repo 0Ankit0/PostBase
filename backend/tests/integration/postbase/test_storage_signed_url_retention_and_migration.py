@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pytest
 from sqlmodel import select
@@ -101,7 +101,7 @@ async def test_signed_url_issue_refresh_revoke_with_expiry_enforcement(client, d
 
     new_grant_id = refresh_response.json()["grant_id"]
     grant = await db_session.get(StorageSignedUrlGrant, int(new_grant_id))
-    grant.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    grant.expires_at = datetime.utcnow() - timedelta(minutes=1)
     await db_session.commit()
 
     expired_refresh_response = await client.post(
@@ -137,7 +137,7 @@ async def test_storage_retention_rule_execution_cleans_expired_files(client, db_
     assert metadata_response.status_code == 200, metadata_response.text
 
     persisted = await db_session.get(FileObject, int(file_id))
-    persisted.created_at = datetime.now(timezone.utc) - timedelta(days=10)
+    persisted.created_at = datetime.utcnow() - timedelta(days=10)
     await db_session.commit()
 
     rule_response = await client.post(

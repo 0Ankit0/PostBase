@@ -29,6 +29,12 @@ TYPE_MAP = {
 
 
 class PostgresNativeDataProvider:
+    def _ensure_postgres(self, db: AsyncSession) -> None:
+        dialect_name = getattr(getattr(db, "bind", None), "dialect", None)
+        current = getattr(dialect_name, "name", None)
+        if current != "postgresql":
+            raise RuntimeError("PostgresNativeDataProvider requires a PostgreSQL database")
+
     def __init__(self) -> None:
         self._translator = CanonicalDataQueryTranslator()
 
@@ -183,14 +189,13 @@ class PostgresNativeDataProvider:
         await db.commit()
 
     async def create_namespace(self, db: AsyncSession, namespace_row: DataNamespace) -> None:
-        if db.bind.dialect.name != "sqlite":
-            await db.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{namespace_row.physical_schema}"'))
+        self._ensure_postgres(db)
+        await db.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{namespace_row.physical_schema}"'))
 
     async def create_table(self, db: AsyncSession, namespace_row: DataNamespace, definition: TableDefinition) -> None:
-        if db.bind.dialect.name == "sqlite":
-            column_defs = ['"id" INTEGER PRIMARY KEY AUTOINCREMENT']
-        else:
-            column_defs = ['"id" BIGSERIAL PRIMARY KEY']
+        self._ensure_postgres(db)
+        await self.create_namespace(db, namespace_row)
+        column_defs = ['"id" BIGSERIAL PRIMARY KEY']
         for column in definition.columns_json:
             if column["name"] == "id":
                 continue
@@ -206,13 +211,7 @@ class PostgresNativeDataProvider:
         await db.execute(text(sql))
 
     async def table_exists(self, db: AsyncSession, namespace_row: DataNamespace, table_name: str) -> bool:
-        qualified = self._qualified_table(db, namespace_row.physical_schema, table_name)
-        if db.bind.dialect.name == "sqlite":
-            result = await db.execute(
-                text("SELECT name FROM sqlite_master WHERE type = 'table' AND name = :table_name"),
-                {"table_name": qualified.strip('"')},
-            )
-            return result.first() is not None
+        self._ensure_postgres(db)
         result = await db.execute(
             text(
                 """
@@ -227,10 +226,7 @@ class PostgresNativeDataProvider:
         return result.first() is not None
 
     async def list_table_columns(self, db: AsyncSession, namespace_row: DataNamespace, table_name: str) -> set[str]:
-        qualified = self._qualified_table(db, namespace_row.physical_schema, table_name)
-        if db.bind.dialect.name == "sqlite":
-            result = await db.execute(text(f"PRAGMA table_info({qualified})"))
-            return {str(row[1]) for row in result.fetchall()}
+        self._ensure_postgres(db)
         result = await db.execute(
             text(
                 """
@@ -276,8 +272,7 @@ class PostgresNativeDataProvider:
         return namespace_row, table_row
 
     def _qualified_table(self, db: AsyncSession, schema: str, table: str) -> str:
-        if db.bind.dialect.name == "sqlite":
-            return f'"{schema}__{table}"'
+        self._ensure_postgres(db)
         return f'"{schema}"."{table}"'
 
     def _apply_policy_read(

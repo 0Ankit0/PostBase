@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import JSON, Column, Index, String, UniqueConstraint, text
@@ -23,7 +23,7 @@ from src.postbase.domain.enums import (
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.utcnow()
 
 
 class Project(SQLModel, table=True):
@@ -110,8 +110,7 @@ class CapabilityBinding(SQLModel, table=True):
             "environment_id",
             "capability_type_id",
             unique=True,
-            sqlite_where=text("status = 'active'"),
-            postgresql_where=text("status = 'active'"),
+            postgresql_where=text("status = 'ACTIVE'"),
         ),
     )
 
@@ -146,7 +145,6 @@ class SecretRef(SQLModel, table=True):
             "environment_id",
             "name",
             unique=True,
-            sqlite_where=text("is_active_version = 1"),
             postgresql_where=text("is_active_version = true"),
         ),
     )

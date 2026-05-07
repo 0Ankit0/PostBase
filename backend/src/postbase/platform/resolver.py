@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,7 +56,7 @@ async def resolve_active_binding(
             .where(BindingSecretRef.binding_id == binding.id)
         )
     ).scalars().all()
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     resolved_secrets: dict[str, str] = {}
     for anchor in anchor_secret_rows:
         latest_valid = (

@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
 
 from src.apps.core.config import settings
 from src.apps.iam.models.user import User
+from src.apps.multitenancy.models.tenant import Tenant
 from src.postbase.control_plane.service import set_binding_status
 from src.postbase.domain.enums import BindingStatus, CapabilityKey, SecretStatus
 from src.postbase.domain.models import (
@@ -23,7 +24,10 @@ from src.postbase.platform.secret_store import DbEncryptedSecretStore
 @pytest.mark.asyncio
 async def test_resolver_uses_latest_valid_secret_version_with_fallback(db_session) -> None:
     store = DbEncryptedSecretStore(settings.POSTBASE_SECRET_ENCRYPTION_KEY)
-    project = Project(tenant_id=1, name="proj", slug="proj")
+    tenant = Tenant(name="resolver-tenant", slug="resolver-tenant")
+    db_session.add(tenant)
+    await db_session.flush()
+    project = Project(tenant_id=tenant.id, name="proj", slug="proj")
     db_session.add(project)
     await db_session.flush()
     environment = Environment(project_id=project.id, name="env", slug="env")
@@ -58,7 +62,7 @@ async def test_resolver_uses_latest_valid_secret_version_with_fallback(db_sessio
         encrypted_value=store.encrypt("v1-secret"),
         value_hash="h1",
         last_four="cret",
-        rotated_at=datetime.now(timezone.utc) - timedelta(days=2),
+        rotated_at=datetime.utcnow() - timedelta(days=2),
     )
     v2 = SecretRef(
         environment_id=environment.id,
@@ -71,8 +75,8 @@ async def test_resolver_uses_latest_valid_secret_version_with_fallback(db_sessio
         encrypted_value=store.encrypt("v2-secret"),
         value_hash="h2",
         last_four="cret",
-        rotated_at=datetime.now(timezone.utc) - timedelta(days=1),
-        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        rotated_at=datetime.utcnow() - timedelta(days=1),
+        expires_at=datetime.utcnow() + timedelta(days=1),
     )
     db_session.add(v1)
     db_session.add(v2)
@@ -88,7 +92,7 @@ async def test_resolver_uses_latest_valid_secret_version_with_fallback(db_sessio
     )
     assert resolved.resolved_secrets["access_key"] == "v2-secret"
 
-    v2.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    v2.expires_at = datetime.utcnow() - timedelta(minutes=1)
     await db_session.commit()
 
     resolved_after_expiry = await resolve_active_binding(
@@ -106,7 +110,10 @@ async def test_activation_blocked_when_required_secret_is_expired(db_session) ->
     db_session.add(actor)
     await db_session.flush()
 
-    project = Project(tenant_id=1, name="proj2", slug="proj2")
+    tenant = Tenant(name="activation-tenant", slug="activation-tenant", owner_id=actor.id)
+    db_session.add(tenant)
+    await db_session.flush()
+    project = Project(tenant_id=tenant.id, name="proj2", slug="proj2")
     db_session.add(project)
     await db_session.flush()
     environment = Environment(project_id=project.id, name="env2", slug="env2")
@@ -142,8 +149,8 @@ async def test_activation_blocked_when_required_secret_is_expired(db_session) ->
         encrypted_value="enc",
         value_hash="hash",
         last_four="0000",
-        rotated_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        rotated_at=datetime.utcnow(),
+        expires_at=datetime.utcnow() - timedelta(minutes=1),
     )
     db_session.add(expired_secret)
     await db_session.flush()

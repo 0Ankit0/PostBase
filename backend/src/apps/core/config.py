@@ -104,6 +104,13 @@ def _normalize_storage_backend(value: str) -> str:
     return normalized
 
 
+def _require_postgres_url(value: str, *, prefix: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized.startswith(prefix):
+        raise ValueError(f"{field_name} must start with '{prefix}'")
+    return normalized
+
+
 def serialize_setting_value(value: Any) -> str | None:
     if value is None:
         return None
@@ -124,7 +131,7 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str = "PostBase"
     APP_ENV: str = "development"
-    APP_INSTANCE_NAME: str = "fastapi-template"
+    APP_INSTANCE_NAME: str = "postbase"
     APP_REGION: str = "local"
     POSTBASE_SECRET_ENCRYPTION_KEY: str = "postbase-dev-encryption-key"
     API_V1_STR: str = "/api/v1"
@@ -208,8 +215,8 @@ class Settings(BaseSettings):
 
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "password"
-    POSTGRES_DB: str = "app"
+    POSTGRES_PASSWORD: str = "postgres"
+    POSTGRES_DB: str = "template_local"
     DATABASE_URL: str | None = None
     SYNC_DATABASE_URL: str | None = None
     DB_POOL_SIZE: int = 10
@@ -436,12 +443,19 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value:
             return value
         data = info.data
-        if data.get("DEBUG", True):
-            return f"sqlite+aiosqlite:///./{data.get('POSTGRES_DB')}.db"
         return (
             f"postgresql+asyncpg://{data.get('POSTGRES_USER')}:"
             f"{data.get('POSTGRES_PASSWORD')}@{data.get('POSTGRES_SERVER')}/"
             f"{data.get('POSTGRES_DB')}"
+        )
+
+    @field_validator("DATABASE_URL", mode="after")
+    @classmethod
+    def validate_db_connection(cls, value: str) -> str:
+        return _require_postgres_url(
+            value,
+            prefix="postgresql+asyncpg://",
+            field_name="DATABASE_URL",
         )
 
     @field_validator("SYNC_DATABASE_URL", mode="before")
@@ -450,12 +464,19 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value:
             return value
         data = info.data
-        if data.get("DEBUG", True):
-            return f"sqlite:///./{data.get('POSTGRES_DB')}.db"
         return (
-            f"postgresql://{data.get('POSTGRES_USER')}:"
+            f"postgresql+psycopg://{data.get('POSTGRES_USER')}:"
             f"{data.get('POSTGRES_PASSWORD')}@{data.get('POSTGRES_SERVER')}/"
             f"{data.get('POSTGRES_DB')}"
+        )
+
+    @field_validator("SYNC_DATABASE_URL", mode="after")
+    @classmethod
+    def validate_sync_db_connection(cls, value: str) -> str:
+        return _require_postgres_url(
+            value,
+            prefix="postgresql+psycopg://",
+            field_name="SYNC_DATABASE_URL",
         )
 
     @field_validator(
@@ -548,7 +569,7 @@ def _load_general_setting_rows() -> list[dict[str, Any]]:
     from sqlalchemy import create_engine, inspect, text
 
     try:
-        engine = create_engine(_environment_settings.SYNC_DATABASE_URL)
+        engine = create_engine(_environment_settings.SYNC_DATABASE_URL or "")
     except Exception:
         return []
 

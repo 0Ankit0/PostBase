@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlmodel import select
 
@@ -28,7 +28,7 @@ async def run_storage_retention_for_environment(db, *, environment: Environment)
     facade = StorageFacade()
     context = StorageTaskContext(db=db, project_id=environment.project_id, environment_id=environment.id)
     provider = await facade.resolve_provider(context)
-    result = await provider.run_retention(context, now=datetime.now(timezone.utc))
+    result = await provider.run_retention(context, now=datetime.utcnow())
     return result.model_dump()
 
 

@@ -44,8 +44,8 @@ def upgrade() -> None:
         """
         UPDATE postbase_secret_ref
         SET version = 1,
-            is_active_version = CASE WHEN status = 'active' THEN TRUE ELSE FALSE END,
-            rotated_at = CASE WHEN status = 'active' THEN updated_at ELSE NULL END
+            is_active_version = CASE WHEN status = 'ACTIVE' THEN TRUE ELSE FALSE END,
+            rotated_at = CASE WHEN status = 'ACTIVE' THEN updated_at ELSE NULL END
         """
     )
 

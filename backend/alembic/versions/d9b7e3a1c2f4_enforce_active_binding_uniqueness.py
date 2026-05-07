@@ -23,7 +23,7 @@ def upgrade() -> None:
         ["environment_id", "capability_type_id"],
         unique=True,
         sqlite_where=sa.text("status = 'active'"),
-        postgresql_where=sa.text("status = 'active'"),
+        postgresql_where=sa.text("status = 'ACTIVE'"),
     )
 
 

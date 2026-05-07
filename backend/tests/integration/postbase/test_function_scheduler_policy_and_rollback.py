@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -69,7 +69,7 @@ async def test_schedule_misfire_is_rejected_when_grace_window_exceeded(db_sessio
     )
     schedule_row = await db_session.get(FunctionSchedule, schedule.id)
     assert schedule_row is not None
-    schedule_row.next_run_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    schedule_row.next_run_at = datetime.utcnow() - timedelta(seconds=30)
     await db_session.commit()
 
     with pytest.raises(HTTPException) as exc_info:

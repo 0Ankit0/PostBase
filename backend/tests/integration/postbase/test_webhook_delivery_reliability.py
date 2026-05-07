@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import select
 
+from src.apps.multitenancy.models.tenant import Tenant
 from src.postbase.capabilities.events.webhook_jobs import (
     enqueue_webhook_job,
     process_due_webhook_jobs,
@@ -12,7 +13,9 @@ from src.postbase.capabilities.events.webhook_jobs import (
 )
 from src.postbase.domain.models import (
     DeadLetterWebhookDelivery,
+    Environment,
     EventChannel,
+    Project,
     Subscription,
     WebhookDeliveryJob,
 )
@@ -24,9 +27,23 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+async def _seed_environment(db_session, *, suffix: str) -> Environment:
+    tenant = Tenant(name=f"webhook-{suffix}", slug=f"webhook-{suffix}", description="")
+    db_session.add(tenant)
+    await db_session.flush()
+    project = Project(tenant_id=tenant.id, name=f"Webhook {suffix}", slug=f"webhook-{suffix}")
+    db_session.add(project)
+    await db_session.flush()
+    environment = Environment(project_id=project.id, name="Development", slug=f"dev-{suffix}")
+    db_session.add(environment)
+    await db_session.flush()
+    return environment
+
+
 @pytest.mark.asyncio
 async def test_webhook_delivery_transient_failure_then_success(db_session):
-    channel = EventChannel(environment_id=1, channel_key="retries", description="")
+    environment = await _seed_environment(db_session, suffix="retries")
+    channel = EventChannel(environment_id=environment.id, channel_key="retries", description="")
     db_session.add(channel)
     await db_session.flush()
     subscription = Subscription(
@@ -75,7 +92,8 @@ async def test_webhook_delivery_transient_failure_then_success(db_session):
 
 @pytest.mark.asyncio
 async def test_webhook_delivery_permanent_failure_moves_to_dead_letter(db_session):
-    channel = EventChannel(environment_id=1, channel_key="dead-letters", description="")
+    environment = await _seed_environment(db_session, suffix="dead-letters")
+    channel = EventChannel(environment_id=environment.id, channel_key="dead-letters", description="")
     db_session.add(channel)
     await db_session.flush()
     subscription = Subscription(
@@ -121,7 +139,8 @@ async def test_webhook_delivery_permanent_failure_moves_to_dead_letter(db_sessio
 
 @pytest.mark.asyncio
 async def test_replay_dead_letter_webhook_job_succeeds(db_session):
-    channel = EventChannel(environment_id=1, channel_key="replay", description="")
+    environment = await _seed_environment(db_session, suffix="replay")
+    channel = EventChannel(environment_id=environment.id, channel_key="replay", description="")
     db_session.add(channel)
     await db_session.flush()
     subscription = Subscription(
@@ -178,7 +197,8 @@ async def test_replay_dead_letter_webhook_job_succeeds(db_session):
 
 @pytest.mark.asyncio
 async def test_replay_dead_letter_is_not_duplicated_when_job_already_recovered(db_session):
-    channel = EventChannel(environment_id=1, channel_key="replay-safe", description="")
+    environment = await _seed_environment(db_session, suffix="replay-safe")
+    channel = EventChannel(environment_id=environment.id, channel_key="replay-safe", description="")
     db_session.add(channel)
     await db_session.flush()
     subscription = Subscription(

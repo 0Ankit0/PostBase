@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import Request
@@ -71,7 +71,7 @@ def error_spike_window() -> timedelta:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.utcnow()
 
 
 def build_request_log_context(request: Request) -> dict[str, Any]:

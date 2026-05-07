@@ -35,8 +35,8 @@ from src.postbase.platform.usage import record_usage
 
 def _ensure_utc_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 class StorageProviderBase:
@@ -95,7 +95,7 @@ class StorageProviderBase:
     async def init_upload(self, context, payload: StorageUploadInitRequest) -> SignedUrlResponse:
         max_ttl = int(self.profile().limits.get("max_signed_url_ttl_seconds", 3600))
         ttl = min(payload.expires_in_seconds, max_ttl)
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+        expires_at = datetime.utcnow() + timedelta(seconds=ttl)
         token = secrets.token_urlsafe(24)
         base_url = getattr(context, "base_url", "http://localhost")
         upload_url = f"{base_url.rstrip('/')}/api/v1/storage/uploads/{token}"
@@ -132,7 +132,7 @@ class StorageProviderBase:
         row = await self._require_file_access(db, context, file_id)
         max_ttl = int(self.profile().limits.get("max_signed_url_ttl_seconds", 3600))
         ttl = min(payload.expires_in_seconds, max_ttl)
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         token = secrets.token_urlsafe(24)
         grant = StorageSignedUrlGrant(
             environment_id=context.environment_id,
@@ -161,7 +161,7 @@ class StorageProviderBase:
     async def refresh_signed_url(self, context, grant_id: int, payload: SignedUrlIssueRequest) -> SignedUrlLifecycleResponse:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         grant = await db.get(StorageSignedUrlGrant, grant_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         if grant is None or grant.environment_id != context.environment_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Signed URL grant not found")
         if grant.revoked_at is not None:
@@ -180,8 +180,8 @@ class StorageProviderBase:
         if grant is None or grant.environment_id != context.environment_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Signed URL grant not found")
         if grant.revoked_at is None:
-            grant.revoked_at = datetime.now(timezone.utc)
-            grant.updated_at = datetime.now(timezone.utc)
+            grant.revoked_at = datetime.utcnow()
+            grant.updated_at = datetime.utcnow()
             await record_audit_event(
                 db,
                 action="storage.signed_url_revoked",
@@ -233,7 +233,7 @@ class StorageProviderBase:
                 )
             )
         ).scalars().first()
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         if existing is None:
             existing = StorageRetentionRule(
                 environment_id=context.environment_id,
@@ -268,7 +268,7 @@ class StorageProviderBase:
 
     async def run_retention(self, context, *, now: datetime | None = None) -> RetentionExecutionResponse:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.utcnow()
         rules = (
             await db.execute(
                 select(StorageRetentionRule).where(

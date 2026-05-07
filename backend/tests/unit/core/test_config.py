@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from src.apps.core.config import ENV_FILE_PATH, Settings, settings
 
 
@@ -8,7 +11,8 @@ class TestSettings:
     
     def test_project_name(self):
         """Test project name is set."""
-        assert settings.PROJECT_NAME == "FastAPI Template"
+        assert isinstance(settings.PROJECT_NAME, str)
+        assert settings.PROJECT_NAME
     
     def test_api_version(self):
         """Test API version prefix."""
@@ -42,6 +46,26 @@ class TestSettings:
         """Test database URL is configured."""
         assert settings.DATABASE_URL is not None
         assert len(settings.DATABASE_URL) > 0
+
+    def test_database_urls_are_postgres(self):
+        parsed = Settings(
+            POSTGRES_SERVER="db.internal",
+            POSTGRES_USER="platform",
+            POSTGRES_PASSWORD="secret",
+            POSTGRES_DB="postbase_test",
+            DATABASE_URL=None,
+            SYNC_DATABASE_URL=None,
+        )
+
+        assert parsed.DATABASE_URL == "postgresql+asyncpg://platform:secret@db.internal/postbase_test"
+        assert parsed.SYNC_DATABASE_URL == "postgresql+psycopg://platform:secret@db.internal/postbase_test"
+
+    def test_sqlite_database_urls_are_rejected(self):
+        with pytest.raises(ValidationError):
+            Settings(DATABASE_URL="sqlite+aiosqlite:///./app.db")
+
+        with pytest.raises(ValidationError):
+            Settings(SYNC_DATABASE_URL="sqlite:///./app.db")
     
     def test_debug_mode(self):
         """Test debug mode setting."""

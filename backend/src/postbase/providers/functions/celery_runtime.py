@@ -34,6 +34,12 @@ from src.postbase.platform.usage import record_usage
 
 
 class CeleryRuntimeFunctionsProvider:
+    @staticmethod
+    def _naive_utc(value: datetime | None) -> datetime | None:
+        if value is None or value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
     def profile(self) -> CapabilityProfile:
         return CapabilityProfile(
             capability=CapabilityKey.FUNCTIONS,
@@ -160,7 +166,7 @@ class CeleryRuntimeFunctionsProvider:
         if function is None or function.environment_id != context.environment_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Function not found")
         self._enforce_env_policy(context, function, payload.payload)
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         replay_window_start = now - timedelta(seconds=settings.POSTBASE_IDEMPOTENCY_REPLAY_WINDOW_SECONDS)
         resolved_correlation_id = correlation_id or str(uuid4())
         if idempotency_key:
@@ -381,23 +387,24 @@ class CeleryRuntimeFunctionsProvider:
     async def pause_schedule(self, context, function_id: int, schedule_id: int) -> FunctionScheduleRead:
         schedule = await self._get_schedule(context, function_id, schedule_id)
         schedule.status = "paused"
-        schedule.updated_at = datetime.now(timezone.utc)
+        schedule.updated_at = datetime.utcnow()
         await context.db.commit()
         return self._schedule_read(schedule)
 
     async def resume_schedule(self, context, function_id: int, schedule_id: int) -> FunctionScheduleRead:
         schedule = await self._get_schedule(context, function_id, schedule_id)
         schedule.status = "active"
-        schedule.updated_at = datetime.now(timezone.utc)
+        schedule.updated_at = datetime.utcnow()
         await context.db.commit()
         return self._schedule_read(schedule)
 
     async def run_schedule_now(self, context, function_id: int, schedule_id: int) -> ExecutionRead:
         schedule = await self._get_schedule(context, function_id, schedule_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
+        next_run_at = self._naive_utc(schedule.next_run_at)
         misfired = bool(
-            schedule.next_run_at and schedule.misfire_grace_seconds >= 0
-            and (now - schedule.next_run_at).total_seconds() > schedule.misfire_grace_seconds
+            next_run_at and schedule.misfire_grace_seconds >= 0
+            and (now - next_run_at).total_seconds() > schedule.misfire_grace_seconds
         )
         if misfired:
             raise HTTPException(status_code=409, detail="Schedule misfire exceeded grace window")
@@ -420,7 +427,7 @@ class CeleryRuntimeFunctionsProvider:
     async def delete_schedule(self, context, function_id: int, schedule_id: int) -> None:
         schedule = await self._get_schedule(context, function_id, schedule_id)
         schedule.status = "deleted"
-        schedule.updated_at = datetime.now(timezone.utc)
+        schedule.updated_at = datetime.utcnow()
         await context.db.commit()
 
     async def list_deployment_history(self, context, function_id: int, *, skip: int, limit: int) -> PaginatedResponse[FunctionDeploymentEventRead]:
@@ -469,7 +476,7 @@ class CeleryRuntimeFunctionsProvider:
         function.runtime_profile = revision.runtime_profile
         function.config_json = revision.config_json
         function.env_policy_json = revision.env_policy_json
-        function.updated_at = datetime.now(timezone.utc)
+        function.updated_at = datetime.utcnow()
         db.add(
             FunctionDeploymentEvent(
                 function_definition_id=function_id,

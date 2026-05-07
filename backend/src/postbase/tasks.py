@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from celery import shared_task
 from sqlmodel import select
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 async def drain_due_webhook_jobs(limit: int = 200, *, environment_id: int | None = None) -> int:
     async with db_session_module.async_session_factory() as db:
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         due_job_filters = [
             WebhookDeliveryJob.status.in_(["pending", "retrying"]),
             WebhookDeliveryJob.next_attempt_at.is_not(None),

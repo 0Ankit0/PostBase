@@ -884,11 +884,21 @@ async def test_migration_apply_partial_failure_rolls_back_and_records_error(clie
     definition = await db_session.get(TableDefinition, migration.table_definition_id)
     assert namespace is not None
     assert definition is not None
-    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
+    physical_table_name = definition.table_name
     table_exists = (
         await db_session.execute(
-            text("SELECT name FROM sqlite_master WHERE type = 'table' AND name = :table_name"),
-            {"table_name": physical_table_name},
+            text(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = :schema_name
+                  AND table_name = :table_name
+                """
+            ),
+            {
+                "schema_name": namespace.physical_schema,
+                "table_name": physical_table_name,
+            },
         )
     ).first()
     assert table_exists is None
@@ -980,8 +990,7 @@ async def test_migration_reconciliation_detects_table_drift(client, db_session):
     definition = await db_session.get(TableDefinition, migration.table_definition_id)
     assert namespace is not None
     assert definition is not None
-    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
-    await db_session.execute(text(f'DROP TABLE IF EXISTS "{physical_table_name}"'))
+    await db_session.execute(text(f'DROP TABLE IF EXISTS "{namespace.physical_schema}"."{definition.table_name}"'))
     await db_session.commit()
 
     migrations_response = await client.get(
@@ -1016,8 +1025,7 @@ async def test_migration_reconciliation_executor_repairs_drift(client, db_sessio
     definition = await db_session.get(TableDefinition, migration.table_definition_id)
     assert namespace is not None
     assert definition is not None
-    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
-    await db_session.execute(text(f'DROP TABLE IF EXISTS "{physical_table_name}"'))
+    await db_session.execute(text(f'DROP TABLE IF EXISTS "{namespace.physical_schema}"."{definition.table_name}"'))
     await db_session.commit()
 
     reconcile_response = await client.post(
@@ -1057,8 +1065,7 @@ async def test_migration_reconciliation_executor_failure_path(client, db_session
     definition = await db_session.get(TableDefinition, migration.table_definition_id)
     assert namespace is not None
     assert definition is not None
-    physical_table_name = f'{namespace.physical_schema}__{definition.table_name}'
-    await db_session.execute(text(f'DROP TABLE IF EXISTS "{physical_table_name}"'))
+    await db_session.execute(text(f'DROP TABLE IF EXISTS "{namespace.physical_schema}"."{definition.table_name}"'))
     await db_session.commit()
 
     from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
