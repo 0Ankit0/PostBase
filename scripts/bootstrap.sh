@@ -20,7 +20,7 @@ case "$PROFILE" in
     ;;
 esac
 
-./scripts/copy_env_templates.sh
+./scripts/copy_env_templates.sh "$PROFILE"
 
 echo "Installing backend dependencies..."
 (cd backend && uv sync --all-groups)
@@ -58,7 +58,7 @@ echo "Applying backend migrations to ${DB_NAME}..."
   POSTGRES_PASSWORD=postgres \
   POSTGRES_DB="$DB_NAME" \
   DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/${DB_NAME}" \
-  SYNC_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/${DB_NAME}" \
+  SYNC_DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/${DB_NAME}" \
   REDIS_URL="redis://localhost:6379/0" \
   CELERY_BROKER_URL="redis://localhost:6379/0" \
   CELERY_RESULT_BACKEND="redis://localhost:6379/0" \
