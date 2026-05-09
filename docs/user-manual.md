@@ -168,6 +168,58 @@ curl -sS -X POST "$API/environments/$ENV_ID/data/namespaces/$NAMESPACE_ID/tables
 
 This table lets authenticated PostBase users see only their own rows.
 
+For advanced Postgres provisioning, you can add `advanced_features` to the same table creation payload. This keeps Postgres-specific behavior attached to the control-plane definition while still exposing the same `/api/v1/data/*` facade for CRUD:
+
+```bash
+curl -sS -X POST "$API/environments/$ENV_ID/data/namespaces/$NAMESPACE_ID/tables" \
+  -H "$OPERATOR_AUTH" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "table_name": "audit_events",
+    "columns": [
+      {"name": "tenant_id", "type": "integer", "nullable": false},
+      {"name": "created_at", "type": "datetime", "nullable": false},
+      {"name": "title", "type": "citext", "nullable": false}
+    ],
+    "policy_mode": "public",
+    "advanced_features": {
+      "indexes": [
+        {
+          "name": "ix_audit_tenant_created",
+          "columns": ["tenant_id", "created_at"],
+          "method": "btree"
+        }
+      ],
+      "partitioning": {
+        "strategy": "range",
+        "columns": ["created_at"],
+        "partitions": [
+          {"name": "audit_events_2026_h1", "from_value": "2026-01-01", "to_value": "2026-07-01"},
+          {"name": "audit_events_2026_h2", "from_value": "2026-07-01", "to_value": "2027-01-01"}
+        ]
+      },
+      "sharding": {
+        "strategy": "logical",
+        "shard_key": "tenant_id",
+        "shard_count": 8
+      },
+      "replication": {
+        "mode": "logical",
+        "publication_name": "audit_events_pub"
+      },
+      "listen_notify": [
+        {
+          "channel": "audit_runtime",
+          "events": ["insert", "update"],
+          "payload_columns": ["tenant_id", "title"]
+        }
+      ]
+    }
+  }'
+```
+
+The response includes `advanced_features_json.integration_manifest`, which tells you which Postgres features were provisioned directly and which topology-oriented capabilities still require external infrastructure or client routing.
+
 ## 7. Sign up an application user in the environment
 
 Now switch from operator APIs to the PostBase capability auth API:
@@ -270,4 +322,4 @@ List the seeded provider catalog:
 curl -sS "$API/provider-catalog" -H "$OPERATOR_AUTH"
 ```
 
-That response should include providers such as `local-postgres`, `postgres-native`, `local-disk`, `celery-runtime`, and `redis-pubsub`.
+That response should include providers such as `local-postgres`, `postgres-native`, `local-disk`, `celery-runtime`, and `redis-pubsub`. For `postgres-native`, the catalog metadata also advertises optional features such as partitioning, replication, sharding, extensions, indexes, and LISTEN/NOTIFY support.

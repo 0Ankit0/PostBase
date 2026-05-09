@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 from src.apps.iam.utils.hashid import encode_id
 from src.postbase.domain.enums import (
@@ -315,11 +315,67 @@ class ColumnDefinition(BaseModel):
     primary_key: bool = False
 
 
+class PostgresIndexCreate(BaseModel):
+    name: str | None = None
+    columns: list[str] = Field(default_factory=list)
+    unique: bool = False
+    method: str = "btree"
+    include_columns: list[str] = Field(default_factory=list)
+
+
+class PostgresPartitionCreate(BaseModel):
+    name: str | None = None
+    from_value: Any | None = None
+    to_value: Any | None = None
+    values: list[Any] = Field(default_factory=list)
+
+
+class PostgresPartitioningCreate(BaseModel):
+    strategy: str
+    columns: list[str] = Field(default_factory=list)
+    partitions: list[PostgresPartitionCreate] = Field(default_factory=list)
+    partition_count: int | None = None
+
+
+class PostgresShardingCreate(BaseModel):
+    strategy: str = "logical"
+    shard_key: str
+    shard_count: int = 4
+    routing_header: str | None = None
+    colocate_with: str | None = None
+
+
+class PostgresReplicationCreate(BaseModel):
+    mode: str = "logical"
+    managed: bool = False
+    publication_name: str | None = None
+    publish_operations: list[str] = Field(default_factory=lambda: ["insert", "update", "delete"])
+    replica_identity: str = "default"
+    replica_identity_index: str | None = None
+    read_replica_endpoints: list[str] = Field(default_factory=list)
+
+
+class PostgresListenNotifyCreate(BaseModel):
+    channel: str
+    events: list[str] = Field(default_factory=lambda: ["insert", "update", "delete"])
+    payload_columns: list[str] = Field(default_factory=list)
+
+
+class PostgresAdvancedFeaturesCreate(BaseModel):
+    extensions: list[str] = Field(default_factory=list)
+    indexes: list[PostgresIndexCreate] = Field(default_factory=list)
+    partitioning: PostgresPartitioningCreate | None = None
+    sharding: PostgresShardingCreate | None = None
+    replication: PostgresReplicationCreate | None = None
+    listen_notify: list[PostgresListenNotifyCreate] = Field(default_factory=list)
+
+
 class TableCreate(BaseModel):
     table_name: str
     columns: list[ColumnDefinition]
     policy_mode: PolicyMode = PolicyMode.PUBLIC
     owner_column: str | None = None
+    advanced_features: PostgresAdvancedFeaturesCreate | None = None
 
 
 class TableRead(EncodedModel):
@@ -329,6 +385,7 @@ class TableRead(EncodedModel):
     columns_json: list[dict[str, Any]]
     policy_mode: PolicyMode
     owner_column: str | None
+    advanced_features_json: dict[str, Any]
     status: str
 
     @field_serializer("namespace_id")

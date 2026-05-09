@@ -1,6 +1,6 @@
 # PostBase
 
-PostBase is a backend platform with a control plane for projects, environments, provider bindings, and capability operations across auth, data, storage, functions, and events.
+PostBase is a backend platform with a control plane for projects, environments, provider bindings, and capability operations across auth, data, storage, functions, and events. The data plane is Postgres-first and now includes advanced table provisioning metadata for extensions, indexes, partitioning, sharding manifests, replication manifests, and LISTEN/NOTIFY integration.
 
 ## Quick Start
 

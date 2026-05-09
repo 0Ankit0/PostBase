@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import text
@@ -11,22 +13,11 @@ from src.apps.core.schemas import PaginatedResponse
 from src.postbase.capabilities.data.contracts import DataMutationPayload, DataMutationResult, DataQueryRequest, DataQueryResult
 from src.postbase.domain.enums import CapabilityKey, PolicyMode
 from src.postbase.providers.data.adapter_translation import CanonicalDataQueryTranslator
+from src.postbase.providers.data.postgres_advanced import build_postgres_table_plan
 from src.postbase.domain.models import DataNamespace, TableDefinition
 from src.postbase.platform.access import PostBaseAccessContext, validate_identifier
 from src.postbase.platform.contracts import CapabilityProfile, ProviderHealth
 from src.postbase.platform.usage import record_usage
-
-
-TYPE_MAP = {
-    "string": "VARCHAR(255)",
-    "text": "TEXT",
-    "integer": "INTEGER",
-    "boolean": "BOOLEAN",
-    "float": "FLOAT",
-    "datetime": "TIMESTAMP",
-    "json": "TEXT",
-}
-
 
 class PostgresNativeDataProvider:
     def _ensure_postgres(self, db: AsyncSession) -> None:
@@ -42,8 +33,21 @@ class PostgresNativeDataProvider:
         return CapabilityProfile(
             capability=CapabilityKey.DATA,
             provider_key="postgres-native",
-            supported_operations=["list", "query", "create", "update", "delete"],
-            optional_features=["owner_policy"],
+            supported_operations=["list", "query", "create", "update", "delete", "migrations"],
+            optional_features=[
+                "owner_policy",
+                "extensions",
+                "indexes",
+                "partitioning",
+                "sharding",
+                "replication",
+                "listen_notify",
+                "jsonb",
+                "citext",
+                "vector",
+            ],
+            validation_checks=["postgres_required", "normalized_table_plan"],
+            limits={"max_partition_count": 64, "max_listen_notify_channels_per_table": 8},
         )
 
     async def health(self) -> ProviderHealth:
@@ -124,7 +128,7 @@ class PostgresNativeDataProvider:
     ) -> DataMutationResult:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         namespace_row, table_row = await self._resolve_table(db, context, namespace, table)
-        values = dict(payload.values)
+        values = self._coerce_mutation_values(table_row, dict(payload.values))
         self._enforce_write_policy(context, table_row, values)
         columns = ", ".join(f'"{key}"' for key in values.keys())
         placeholders = ", ".join(f":{key}" for key in values.keys())
@@ -152,7 +156,7 @@ class PostgresNativeDataProvider:
     ) -> DataMutationResult:
         db: AsyncSession = context.db  # type: ignore[attr-defined]
         namespace_row, table_row = await self._resolve_table(db, context, namespace, table)
-        values = dict(payload.values)
+        values = self._coerce_mutation_values(table_row, dict(payload.values))
         assignments = ", ".join(f'"{key}" = :{key}' for key in values.keys())
         params: dict[str, Any] = {**values, "row_id": row_id}
         sql = (
@@ -195,20 +199,14 @@ class PostgresNativeDataProvider:
     async def create_table(self, db: AsyncSession, namespace_row: DataNamespace, definition: TableDefinition) -> None:
         self._ensure_postgres(db)
         await self.create_namespace(db, namespace_row)
-        column_defs = ['"id" BIGSERIAL PRIMARY KEY']
-        for column in definition.columns_json:
-            if column["name"] == "id":
-                continue
-            sql_type = TYPE_MAP.get(column["type"], "TEXT")
-            nullable = "" if column.get("nullable", True) else " NOT NULL"
-            if column.get("primary_key", False):
-                nullable = " PRIMARY KEY"
-            column_defs.append(f'"{column["name"]}" {sql_type}{nullable}')
-        sql = (
-            f"CREATE TABLE IF NOT EXISTS {self._qualified_table(db, namespace_row.physical_schema, definition.table_name)} "
-            f"({', '.join(column_defs)})"
+        table_plan = build_postgres_table_plan(
+            schema=namespace_row.physical_schema,
+            table_name=definition.table_name,
+            columns=definition.columns_json,
+            advanced_features=definition.advanced_features_json,
         )
-        await db.execute(text(sql))
+        for statement in table_plan.statements:
+            await db.execute(text(statement))
 
     async def table_exists(self, db: AsyncSession, namespace_row: DataNamespace, table_name: str) -> bool:
         self._ensure_postgres(db)
@@ -324,3 +322,29 @@ class PostgresNativeDataProvider:
             if not table_row.owner_column or context.auth_user_id is None:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner policy misconfigured")
             values[table_row.owner_column] = context.auth_user_id
+
+    def _coerce_mutation_values(self, table_row: TableDefinition, values: dict[str, Any]) -> dict[str, Any]:
+        type_by_column = {
+            str(column["name"]): str(column.get("type", "")).strip().lower()
+            for column in table_row.columns_json
+        }
+        coerced: dict[str, Any] = {}
+        for key, value in values.items():
+            column_type = type_by_column.get(key)
+            if column_type is None or value is None:
+                coerced[key] = value
+                continue
+            if column_type == "datetime" and isinstance(value, str):
+                coerced[key] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                continue
+            if column_type == "date" and isinstance(value, str):
+                coerced[key] = date.fromisoformat(value)
+                continue
+            if column_type == "time" and isinstance(value, str):
+                coerced[key] = time.fromisoformat(value)
+                continue
+            if column_type == "uuid" and isinstance(value, str):
+                coerced[key] = UUID(value)
+                continue
+            coerced[key] = value
+        return coerced

@@ -42,6 +42,21 @@ async def seed_provider_catalog(db: AsyncSession) -> None:
         capability_ids[profile.capability.value] = capability_row.id
 
     for profile in provider_registry.profiles():
+        seeded_metadata = {
+            "seeded": True,
+            "conformance_version": profile.conformance_version,
+            "supported_regions": profile.supported_regions,
+            "required_secret_kinds": profile.required_secret_kinds,
+            "supported_operations": profile.supported_operations,
+            "optional_features": profile.optional_features,
+            "validation_checks": profile.validation_checks,
+            "limits": profile.limits,
+            "conformance": {
+                "state": "pending",
+                "badge": "unknown",
+                "last_report_path": "backend/artifacts/provider-conformance.json",
+            },
+        }
         existing = (
             await db.execute(
                 select(ProviderCatalogEntry).where(
@@ -61,21 +76,20 @@ async def seed_provider_catalog(db: AsyncSession) -> None:
                         (profile.capability.value, profile.provider_key),
                         ProviderCertificationState.EXPERIMENTAL,
                     ),
-                    metadata_json={
-                        "seeded": True,
-                        "conformance_version": profile.conformance_version,
-                        "supported_regions": profile.supported_regions,
-                        "required_secret_kinds": profile.required_secret_kinds,
-                        "supported_operations": profile.supported_operations,
-                        "optional_features": profile.optional_features,
-                        "validation_checks": profile.validation_checks,
-                        "limits": profile.limits,
-                        "conformance": {
-                            "state": "pending",
-                            "badge": "unknown",
-                            "last_report_path": "backend/artifacts/provider-conformance.json",
-                        },
-                    },
+                    metadata_json=seeded_metadata,
                 )
             )
+            continue
+        existing.certification_state = CERTIFICATION_STATES.get(
+            (profile.capability.value, profile.provider_key),
+            ProviderCertificationState.EXPERIMENTAL,
+        )
+        existing.metadata_json = {
+            **existing.metadata_json,
+            **seeded_metadata,
+            "conformance": {
+                **seeded_metadata["conformance"],
+                **existing.metadata_json.get("conformance", {}),
+            },
+        }
     await db.commit()

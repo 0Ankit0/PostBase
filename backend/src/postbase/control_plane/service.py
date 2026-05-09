@@ -61,6 +61,7 @@ from src.postbase.platform.seeding import seed_provider_catalog
 from src.postbase.platform.security import hash_secret
 from src.postbase.platform.secret_store import DbEncryptedSecretStore
 from src.apps.core.config import settings
+from src.postbase.providers.data.postgres_advanced import build_postgres_table_plan
 from src.postbase.providers.data.postgres_native import PostgresNativeDataProvider
 
 
@@ -850,6 +851,7 @@ async def create_table_metadata(
     columns: list[dict],
     policy_mode: PolicyMode,
     owner_column: str | None,
+    advanced_features_json: dict[str, Any] | None,
 ) -> TableDefinition:
     normalized_table = validate_identifier(table_name, "Table name")
     existing = (
@@ -863,12 +865,30 @@ async def create_table_metadata(
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Table already exists")
 
+    table_plan = build_postgres_table_plan(
+        schema=namespace.physical_schema,
+        table_name=normalized_table,
+        columns=columns,
+        advanced_features=advanced_features_json,
+    )
+    known_columns = {"id", *(column["name"] for column in table_plan.normalized_columns)}
+    normalized_owner_column = (
+        validate_identifier(owner_column, "Owner column")
+        if owner_column is not None
+        else None
+    )
+    if normalized_owner_column is not None and normalized_owner_column not in known_columns:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Owner column must exist on the table")
+    if policy_mode == PolicyMode.OWNER and normalized_owner_column is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Owner policies require owner_column")
+
     provider_entry = TableDefinition(
         namespace_id=namespace.id,
         table_name=normalized_table,
-        columns_json=columns,
+        columns_json=table_plan.normalized_columns,
         policy_mode=policy_mode,
-        owner_column=owner_column,
+        owner_column=normalized_owner_column,
+        advanced_features_json=table_plan.normalized_advanced_features,
     )
     db.add(provider_entry)
     await db.flush()
@@ -887,7 +907,7 @@ async def create_table_metadata(
             version=f"{provider_entry.id:04d}",
             status=migration_status,
             reconciliation_status="in_sync" if migration_status == MigrationStatus.APPLIED else "pending_apply",
-            applied_sql=f"create table {normalized_table}",
+            applied_sql=table_plan.applied_sql or f"create table {normalized_table}",
         )
     )
     await record_audit_event(
@@ -899,7 +919,13 @@ async def create_table_metadata(
         tenant_id=project.tenant_id,
         project_id=project.id,
         environment_id=environment.id,
-        payload={"table_name": normalized_table, "policy_mode": policy_mode.value},
+        payload={
+            "table_name": normalized_table,
+            "policy_mode": policy_mode.value,
+            "postgres_capabilities": (
+                table_plan.normalized_advanced_features.get("integration_manifest", {}).get("postgres_capabilities", [])
+            ),
+        },
     )
     await db.commit()
     await db.refresh(provider_entry)

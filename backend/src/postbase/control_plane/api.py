@@ -1590,6 +1590,7 @@ async def create_table(
         columns=[column.model_dump() for column in payload.columns],
         policy_mode=payload.policy_mode,
         owner_column=payload.owner_column,
+        advanced_features_json=payload.advanced_features.model_dump(exclude_none=True) if payload.advanced_features else None,
     )
     migration = (
         await db.execute(

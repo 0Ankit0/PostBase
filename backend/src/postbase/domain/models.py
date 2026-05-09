@@ -365,6 +365,10 @@ class TableDefinition(SQLModel, table=True):
     )
     policy_mode: PolicyMode = Field(default=PolicyMode.PUBLIC)
     owner_column: str | None = Field(default=None, max_length=63)
+    advanced_features_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, default=dict),
+    )
     status: str = Field(default="active", max_length=32)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
