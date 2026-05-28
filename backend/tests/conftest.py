@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel
@@ -38,6 +39,7 @@ TEST_DB_USER = os.environ["POSTGRES_USER"]
 TEST_DB_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 TEST_DB_NAME = os.environ["POSTGRES_DB"]
 TEST_DATABASE_URL = os.environ["DATABASE_URL"]
+TEST_DB_PORT = make_url(TEST_DATABASE_URL).port or 5432
 
 
 def _quote_identifier(value: str) -> str:
@@ -59,7 +61,7 @@ async def _connect_admin(database: str = "postgres") -> asyncpg.Connection:
     try:
         return await asyncpg.connect(
             host=TEST_DB_HOST,
-            port=5432,
+            port=TEST_DB_PORT,
             user=TEST_DB_USER,
             password=TEST_DB_PASSWORD,
             database=database,
@@ -67,7 +69,7 @@ async def _connect_admin(database: str = "postgres") -> asyncpg.Connection:
     except OSError as exc:
         raise RuntimeError(
             "PostgreSQL is required for backend tests. Start it with "
-            "'docker compose up -d db redis' or run 'make bootstrap-local'."
+            "'podman compose up -d db redis' or run 'make bootstrap-local'."
         ) from exc
 
 

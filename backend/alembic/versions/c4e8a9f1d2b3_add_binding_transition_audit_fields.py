@@ -17,6 +17,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_capability_binding"):
+        return
+
     op.add_column(
         "postbase_capability_binding",
         sa.Column("last_transition_actor_user_id", sa.Integer(), nullable=True),
@@ -43,6 +48,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_capability_binding"):
+        return
+
     op.drop_index(
         "ix_postbase_capability_binding_last_transition_actor_user_id",
         table_name="postbase_capability_binding",

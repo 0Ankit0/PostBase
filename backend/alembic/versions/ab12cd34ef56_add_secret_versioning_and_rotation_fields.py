@@ -17,6 +17,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_secret_ref"):
+        return
+
     op.add_column("postbase_secret_ref", sa.Column("version", sa.Integer(), nullable=False, server_default="1"))
     op.add_column(
         "postbase_secret_ref",
@@ -54,6 +59,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_secret_ref"):
+        return
+
     op.drop_index("uq_postbase_secret_ref_active_version_per_name", table_name="postbase_secret_ref")
     op.drop_constraint("uq_postbase_secret_ref_env_name_version", "postbase_secret_ref", type_="unique")
     op.create_unique_constraint("uq_postbase_secret_ref_env_name", "postbase_secret_ref", ["environment_id", "name"])

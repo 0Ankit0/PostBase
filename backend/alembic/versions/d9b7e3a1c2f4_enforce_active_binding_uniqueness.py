@@ -17,6 +17,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_capability_binding"):
+        return
+
     op.create_index(
         "uq_postbase_capability_binding_active_per_capability_env",
         "postbase_capability_binding",
@@ -28,6 +33,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_capability_binding"):
+        return
+
     op.drop_index(
         "uq_postbase_capability_binding_active_per_capability_env",
         table_name="postbase_capability_binding",

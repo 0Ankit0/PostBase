@@ -35,7 +35,7 @@ if [ "$DEBUG" = "False" ]; then
             echo "Please start Redis manually:"
             echo "  macOS: brew services start redis"
             echo "  Linux: sudo systemctl start redis-server"
-            echo "  Docker: docker run -d -p 6379:6379 redis:alpine"
+            echo "  Podman: podman run -d -p 6379:6379 redis:alpine"
             exit 1
         fi
     else

@@ -12,6 +12,18 @@ if TYPE_CHECKING:
     from src.apps.notification.models.notification import Notification
     from src.apps.notification.models.notification_preference import NotificationPreference
 
+
+def _tenant_owner_foreign_keys():
+    from src.apps.multitenancy.models.tenant import Tenant
+
+    return [Tenant.owner_id]
+
+
+def _tenant_invitation_foreign_keys():
+    from src.apps.multitenancy.models.tenant import TenantInvitation
+
+    return [TenantInvitation.invited_by]
+
 class UserBase(SQLModel):
     username: str = Field(
         unique=True,
@@ -92,12 +104,12 @@ class User(UserBase, table=True):
     user_roles: list["UserRole"] = Relationship(back_populates="user")
     owned_tenants: list["Tenant"] = Relationship(
         back_populates="owner",
-        sa_relationship_kwargs={"foreign_keys": "[Tenant.owner_id]"},
+        sa_relationship_kwargs={"foreign_keys": _tenant_owner_foreign_keys},
     )
     tenant_memberships: list["TenantMember"] = Relationship(back_populates="user")
     sent_invitations: list["TenantInvitation"] = Relationship(
         back_populates="inviter",
-        sa_relationship_kwargs={"foreign_keys": "[TenantInvitation.invited_by]"},
+        sa_relationship_kwargs={"foreign_keys": _tenant_invitation_foreign_keys},
     )
     notifications: list["Notification"] = Relationship(back_populates="user")
     notification_devices: list["NotificationDevice"] = Relationship(back_populates="user")

@@ -1,4 +1,5 @@
 from datetime import timedelta, datetime, timezone
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +25,7 @@ from src.apps.observability.service import record_token_event
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
+logger = logging.getLogger(__name__)
 
 
 @router.post("/signup/")
@@ -151,6 +153,7 @@ async def signup(
     except HTTPException:
         raise
     except Exception:
+        logger.exception("Signup failed for username=%s email=%s", login_data.username, login_data.email)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

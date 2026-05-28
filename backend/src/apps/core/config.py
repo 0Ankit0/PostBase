@@ -203,7 +203,7 @@ class Settings(BaseSettings):
 
     BACKEND_CORS_ORIGINS: list[Union[str, AnyHttpUrl]] = [
         "http://localhost",
-        "http://localhost:13000",
+        "http://localhost:3000",
     ]
     TRUSTED_HOSTS: list[str] = ["localhost", "127.0.0.1", "test", "testserver"]
     PROXY_TRUSTED_HOSTS: list[str] = ["*"]
@@ -224,12 +224,12 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = 30
     DB_POOL_RECYCLE: int = 1800
 
-    FRONTEND_URL: str = "http://localhost:13000"
-    SERVER_HOST: str = "http://localhost:18000"
+    FRONTEND_URL: str = "http://localhost:3000"
+    SERVER_HOST: str = "http://localhost:8000"
     HTTP_TIMEOUT_SECONDS: float = 15.0
     HTTP_RETRY_COUNT: int = 1
     HTTP_BACKOFF_SECONDS: float = 0.5
-    WS_ALLOWED_ORIGINS: list[str] = ["http://localhost:13000"]
+    WS_ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
     WS_HEARTBEAT_INTERVAL_SECONDS: int = 30
     WS_MAX_IDLE_SECONDS: int = 90
 
@@ -322,7 +322,7 @@ class Settings(BaseSettings):
     FACEBOOK_ENABLED: bool = False
     FACEBOOK_CLIENT_ID: str = "your-facebook-client-id"
     FACEBOOK_CLIENT_SECRET: str = "your-facebook-client-secret"
-    SOCIAL_AUTH_REDIRECT_URL: str = "http://localhost:13000/auth/callback"
+    SOCIAL_AUTH_REDIRECT_URL: str = "http://localhost:3000/auth/callback"
 
     ANALYTICS_ENABLED: bool = False
     ANALYTICS_PROVIDER: str = "posthog"

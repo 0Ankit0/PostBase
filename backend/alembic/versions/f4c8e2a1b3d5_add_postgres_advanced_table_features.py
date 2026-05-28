@@ -17,6 +17,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_table_definition"):
+        return
+
     op.add_column(
         "postbase_table_definition",
         sa.Column(
@@ -30,4 +35,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("postbase_table_definition"):
+        return
+
     op.drop_column("postbase_table_definition", "advanced_features_json")
