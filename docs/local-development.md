@@ -6,7 +6,7 @@ PostBase is **Postgres-only** for backend runtime, migrations, and backend tests
 
 - Python 3.14 with `uv`
 - Node.js 20 with `npm`
-- Docker with Docker Compose
+- Podman with `podman compose`
 - Flutter (optional, only for the mobile app)
 
 ## Bootstrap profiles
@@ -21,7 +21,7 @@ This command:
 
 1. Creates missing env files from the local templates.
 2. Installs backend, frontend, and optional mobile dependencies.
-3. Starts Postgres and Redis with Docker Compose.
+3. Starts Postgres and Redis with `podman compose`.
 4. Creates and migrates the local Postgres database `template_local`.
 
 For the staging-like profile:
@@ -73,7 +73,7 @@ make ci
 
 ## Backend test requirements
 
-Backend tests expect PostgreSQL on `localhost:5432`. The test harness creates and resets the `postbase_test` database automatically, but it does **not** start Postgres for you.
+Backend tests expect PostgreSQL on the port defined by `DATABASE_URL` and default to the repo's local Podman mapping on `localhost:15432`. The test harness creates and resets the `postbase_test` database automatically, but it does **not** start Postgres for you.
 
 Use either of these before backend tests:
 
@@ -84,5 +84,5 @@ make bootstrap-local
 or:
 
 ```bash
-docker compose up -d db redis
+podman compose up -d db redis
 ```

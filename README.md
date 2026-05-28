@@ -23,7 +23,7 @@ PostBase is a backend platform with a control plane for projects, environments, 
 Both profiles provision:
 
 - default runnable env files for backend/frontend/mobile,
-- required infrastructure services (Postgres + Redis), and
+- required infrastructure services (Postgres + Redis via `podman compose`), and
 - initial backend schema state via migrations.
 
 Backend runtime, Alembic migrations, and backend tests all require PostgreSQL. SQLite is not a supported backend in this repository.

@@ -1,5 +1,8 @@
 .PHONY: copy-env setup bootstrap-local bootstrap-staging docs docs-check deploy-readiness backend-lint backend-test backend-dev backend-migrate frontend-lint frontend-test frontend-dev mobile-lint mobile-test mobile-dev dev-up infra-up dev-down infra-down health-check lint test baseline-checks dev ci
 
+CONTAINER_RUNTIME ?= podman
+COMPOSE := $(CONTAINER_RUNTIME) compose
+
 copy-env:
 	./scripts/copy_env_templates.sh
 
@@ -65,16 +68,16 @@ mobile-dev:
 	fi
 
 dev-up:
-	docker compose up --build
+	$(COMPOSE) up --build
 
 infra-up:
-	docker compose up -d db redis
+	$(COMPOSE) up -d db redis
 
 dev-down:
-	docker compose down -v
+	$(COMPOSE) down -v
 
 infra-down:
-	docker compose down -v
+	$(COMPOSE) down -v
 
 health-check:
 	python3 scripts/check_template_health.py
