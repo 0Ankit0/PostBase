@@ -13,21 +13,18 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ],
+    "types": ["vite/client"],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "next": ["./src/compat/next/index.ts"],
+      "next/link": ["./src/compat/next/link.tsx"],
+      "next/navigation": ["./src/compat/next/navigation.ts"],
+      "next/font/google": ["./src/compat/next/font-google.ts"]
     }
   },
   "include": [
-    "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
   "exclude": ["node_modules"]

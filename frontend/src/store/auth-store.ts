@@ -27,6 +27,7 @@ export const useAuthStore = create<AuthState>()(
           localStorage.setItem('access_token', access);
           localStorage.setItem('refresh_token', refresh);
         }
+        set({ isAuthenticated: true });
       },
       setTenant: (tenant) => {
         set({ tenant });

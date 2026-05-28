@@ -1,7 +1,15 @@
-import { defineConfig } from 'vitest/config';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
 export default defineConfig({
+  plugins: [
+    react({
+      babel: {
+        plugins: ['babel-plugin-react-compiler'],
+      },
+    }),
+  ],
   resolve: {
     alias: [
       {
@@ -26,9 +34,16 @@ export default defineConfig({
       },
     ],
   },
-  test: {
-    environment: 'jsdom',
-    globals: true,
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+  define: {
+    'process.env': 'import.meta.env',
+  },
+  envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 3000,
   },
 });

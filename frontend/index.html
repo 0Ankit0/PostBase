@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PostBase</title>
+    <script>
+      (function() {
+        try {
+          var themeStorage = localStorage.getItem('theme-storage');
+          var defaultTheme = {
+            id: 'skyline',
+            mode: 'light',
+            palette: {
+              background: '#f8fafc',
+              foreground: '#0f172a',
+              surface: '#ffffff',
+              surfaceMuted: '#f8fafc',
+              surfaceSubtle: '#f1f5f9',
+              borderColor: '#e2e8f0',
+              textPrimary: '#0f172a',
+              textSecondary: '#334155',
+              textMuted: '#64748b',
+              accent: '#2563eb',
+              accentForeground: '#f8fafc',
+              accentSoft: '#dbeafe',
+              successSoft: '#dcfce7',
+              warningSoft: '#fef3c7',
+              dangerSoft: '#fee2e2'
+            }
+          };
+
+          var activeTheme = defaultTheme;
+          if (themeStorage) {
+            var parsed = JSON.parse(themeStorage);
+            var state = parsed && parsed.state ? parsed.state : null;
+            if (state && Array.isArray(state.customThemes)) {
+              var customTheme = state.customThemes.find(function(theme) {
+                return theme.id === state.activeThemeId;
+              });
+              if (customTheme) {
+                activeTheme = customTheme;
+              }
+            }
+          }
+
+          var root = document.documentElement;
+          root.dataset.themeId = activeTheme.id;
+          root.dataset.themeMode = activeTheme.mode;
+          root.style.colorScheme = activeTheme.mode;
+
+          Object.entries(activeTheme.palette).forEach(function(entry) {
+            var cssName = entry[0].replace(/[A-Z]/g, function(letter) {
+              return '-' + letter.toLowerCase();
+            });
+            root.style.setProperty('--' + cssName, entry[1]);
+          });
+        } catch (error) {
+          document.documentElement.dataset.themeMode = 'light';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+  </html>

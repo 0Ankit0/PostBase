@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import { useAuthStore } from '@/store/auth-store';
@@ -16,9 +16,12 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   const router = useRouter();
   const { isAuthenticated, _hasHydrated, setUser, setTokens, logout } = useAuthStore();
   const [isInitializing, setIsInitializing] = useState(true);
+  const hasInitializedRef = useRef(false);
 
   useEffect(() => {
-    if (!_hasHydrated) return;
+    if (!_hasHydrated || hasInitializedRef.current) return;
+
+    hasInitializedRef.current = true;
 
     async function initAuth() {
       // Already authenticated — fetch current user to keep store fresh

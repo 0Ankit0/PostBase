@@ -3,10 +3,9 @@ node_modules
 .pnpm-store
 
 # Build outputs
-.next
-out
 dist
 build
+.vite
 
 # Development
 .env*.local

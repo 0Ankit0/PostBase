@@ -21,7 +21,7 @@ const features = [
   {
     icon: Zap,
     title: 'Fast & Modern',
-    description: 'Built with Next.js and Fastapi REST for optimal performance.',
+    description: 'Built with React, Vite, and Fastapi REST for fast iteration and delivery.',
   },
   {
     icon: Users,
@@ -65,7 +65,7 @@ export default function Home() {
               Modern Fastapi Template Platform
             </h1>
             <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
-              A powerful, scalable Fastapi Template solution built with Next.js and Fastapi REST API.
+              A powerful, scalable Fastapi Template solution built with React, Vite, and Fastapi REST API.
               Multi-tenant, secure, and ready for production.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">

@@ -1,5 +1,8 @@
 .PHONY: help install dev build start lint test clean docker-build docker-up docker-down
 
+CONTAINER_RUNTIME ?= podman
+COMPOSE := $(CONTAINER_RUNTIME) compose
+
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
 YELLOW := $(shell tput -Txterm setaf 3)
@@ -41,23 +44,23 @@ typecheck: ## Run TypeScript type checking
 	npx tsc --noEmit
 
 clean: ## Clean build artifacts
-	rm -rf .next out node_modules
+	rm -rf dist .vite node_modules tsconfig.tsbuildinfo
 
 # Docker commands
 docker-build: ## Build Docker image
-	docker build -t fastapi_template .
+	$(CONTAINER_RUNTIME) build -t fastapi_template .
 
 docker-up: ## Start all services with Docker Compose
-	docker-compose up -d
+	$(COMPOSE) up -d
 
 docker-down: ## Stop all Docker Compose services
-	docker-compose down
+	$(COMPOSE) down
 
 docker-logs: ## View Docker Compose logs
-	docker-compose logs -f
+	$(COMPOSE) logs -f
 
 docker-shell: ## Open shell in frontend container
-	docker-compose exec frontend sh
+	$(COMPOSE) exec frontend sh
 
 # Development helpers
 setup: install ## Initial project setup
